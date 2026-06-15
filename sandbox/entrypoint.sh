@@ -1,3 +1,3 @@
-#!/bin/bash
+#!/bin/sh
 set -e
-python /sandbox/code.py
+exec python /sandbox/code.py

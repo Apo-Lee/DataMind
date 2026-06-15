@@ -23,10 +23,12 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://datamind:datamind_secret@postgres:5432/datamind
-      SECRET_KEY: dev-secret-key-change-in-production
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-sk-placeholder}
+      DEPLOYMENT_ENV: production
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
       DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-dev-encryption-key-32chars!!}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       DEMO_DATA_DIR: /app/demo_data
     volumes:
       - ./demo_data:/app/demo_data
