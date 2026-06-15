@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """查询引擎 - 将结构化查询意图翻译为受控的 SQL 查询
 
 核心思路：LLM 不直接生成 SQL，而是生成结构化查询意图（JSON Schema），
@@ -103,9 +103,9 @@ _ROLE_SENSITIVITY_ACCESS = {
     "hr_director": {"safe", "sensitive", "highly_sensitive"},
     "finance_bp": {"safe", "sensitive"},
     "finance_director": {"safe", "sensitive"},
-    "dept_ceo": {"safe"},  # 默认不能查看敏感字段
-    "dept_manager": {"safe"},
-    "sales_manager": {"safe"},
+    "dept_ceo": {"safe", "sensitive"},  # V3: 提升到 sensitive
+    "dept_manager": {"safe", "sensitive"},  # V3: 提升到 sensitive
+    "sales_manager": {"safe", "sensitive"},  # V3: 提升到 sensitive
     "employee": {"safe"},
     "viewer": {"safe"},
 }
@@ -145,6 +145,39 @@ _QUERY_INTENT_PROMPT = """你是一个数据分析助手。根据用户的自然
 - 如果涉及"部门"，先查 departments 表的部门名称
 """
 
+
+
+_V3_NORMALIZE_STATUS_FIXES = [
+    ('present', '出勤'),
+    ('normal', '出勤'),
+    ('absent', '缺勤'),
+    ('leave', '请假'),
+    ('late', '迟到'),
+    ('active', '在职'),
+    ('employed', '在职'),
+    ('resigned', '离职'),
+    ('inactive', '离职'),
+    ('probation', '试用期'),
+    ('won', '赢单'),
+    ('lost', '输单'),
+    ('closed_won', '赢单'),
+    ('closed_lost', '输单'),
+    ('in_progress', '进行中'),
+    ('completed', '已完成'),
+    ('planned', '规划中'),
+    ('pending', '待审批'),
+    ('approved', '已审批'),
+    ('rejected', '驳回'),
+    ('paid', '已支付'),
+]
+
+
+def normalize_sql_values(sql: str) -> str:
+    """自动修正 SQL 中常见的枚举值错误"""
+    for eng, chn in _V3_NORMALIZE_STATUS_FIXES:
+        sql = sql.replace("'" + eng + "'", "'" + chn + "'")
+        sql = sql.replace('"' + eng + '"', "'" + chn + "'")
+    return sql
 
 def _build_tables_desc(agent) -> str:
     """生成给 LLM 看的表和列描述（不含敏感字段级别）"""
@@ -250,8 +283,27 @@ class PermissionEngine:
 # ============================================================
 # 4. SQL 生成器（受控模板，LLM 不直接操控 SQL）
 # ============================================================
+
+
+# V3: Known foreign key mapping (main_table, join_table) -> (main_fk_col, join_pk_col)
+FOREIGN_KEYS_MAP = {
+    ("employees", "departments"): ("dept_id", "id"),
+    ("attendance", "employees"): ("employee_id", "id"),
+    ("deals", "customers"): ("customer_id", "id"),
+    ("customers", "departments"): ("owner_dept_id", "id"),
+    ("projects", "departments"): ("dept_id", "id"),
+    ("purchase_orders", "departments"): ("dept_id", "id"),
+    ("resources", "projects"): ("project_id", "id"),
+}
+
 class SQLBuilder:
-    """根据校验通过的查询意图、用户权限生成安全的 SQL（模板化，杜绝注入）"""
+    """根据校验通过的查询意图、用户权限生成安全的 SQL（模板化，杜绝注入）
+
+    V3: 表感知的 SQL 构建
+    - 多表 JOIN 时列名前加表名，消除歧义
+    - JOIN 条件使用 FOREIGN_KEYS_MAP，不猜列名
+    - 不内联 RLS（统一由 QueryInterceptor 注入）
+    """
 
     def __init__(self, user_info: dict, business_tag: str):
         self.user_info = user_info
@@ -281,22 +333,23 @@ class SQLBuilder:
             sql += " ORDER BY " + order_by
         if limit:
             sql += " LIMIT " + str(limit)
-
         return sql
 
     def _build_select(self, intent: dict) -> str:
-        """构建 SELECT 子句（自动过滤敏感列）"""
+        """构建 SELECT 子句（多表 JOIN 时列名加表名前缀）"""
         parts = []
-        table_sens = self.sensitivity.get(intent.get("main_table", ""), {})
+        main_table = intent.get("main_table", "")
+        table_sens = self.sensitivity.get(main_table, {})
+        has_joins = len(intent.get("join_tables", [])) > 0
 
-        # 显式 select_columns
         for col in intent.get("select_columns", []):
-            # 过滤敏感列
             if table_sens.get(col, "safe") not in self.max_level:
-                continue  # 直接跳过（不应发生，因为 permission check 过了）
-            parts.append("\"" + col + "\"")
+                continue
+            if has_joins:
+                parts.append("\"" + main_table + "\".\"" + col + "\"")
+            else:
+                parts.append("\"" + col + "\"")
 
-        # 聚合列
         for agg in intent.get("aggregations", []):
             agg_col = agg.get("column", "")
             agg_type = agg.get("type", "COUNT")
@@ -304,98 +357,58 @@ class SQLBuilder:
             if agg_col:
                 col_level = table_sens.get(agg_col, "safe")
                 if col_level not in self.max_level:
-                    parts.append("0 AS " + alias)
+                    parts.append("0 AS \"" + alias + "\"")
                 else:
-                    parts.append(agg_type + "(\"" + agg_col + "\") AS \"" + alias + "\"")
+                    if has_joins:
+                        parts.append(agg_type + "(\"" + main_table + "\".\"" + agg_col + "\") AS \"" + alias + "\"")
+                    else:
+                        parts.append(agg_type + "(\"" + agg_col + "\") AS \"" + alias + "\"")
             else:
-                parts.append(agg_type + "(*) AS " + alias)
+                if agg_type == "SUM":
+                    parts.append("COUNT(*) AS \"" + alias + "\"")
+                else:
+                    parts.append(agg_type + "(*) AS \"" + alias + "\"")
 
         if not parts:
             parts.append("*")
-
         return ", ".join(parts)
 
     def _build_joins(self, intent: dict) -> str:
-        """构建 JOIN 子句"""
+        """构建 JOIN 子句（只使用 FOREIGN_KEYS_MAP，不猜列名）"""
+        main_table = intent.get("main_table", "")
         joins = []
         for jt in intent.get("join_tables", []):
-            # 根据命名约定推断外键
-            fk_col = jt.rstrip("s") + "_id"
-            joins.append("LEFT JOIN \"" + jt + "\" ON \"" + jt + "\".id = \"" + intent.get("main_table", "") + "\"." + fk_col)
+            key = (main_table, jt)
+            if key in FOREIGN_KEYS_MAP:
+                fk_col, pk_col = FOREIGN_KEYS_MAP[key]
+                joins.append("LEFT JOIN \"" + jt + "\" ON \"" + jt + "\".\"" + pk_col + "\" = \"" + main_table + "\".\"" + fk_col + "\"")
+            # V3: 找不到外键映射时直接跳过 JOIN（避免生成错误的 column_name）
         return " ".join(joins)
 
     def _build_where(self, intent: dict) -> str:
-        """构建 WHERE 子句（自动注入 RLS 过滤 + 用户过滤条件）"""
-        conditions = []
-
-        # 用户过滤条件
-        for f in intent.get("filters", []):
-            col = f.get("column", "")
-            op = f.get("op", "=")
-            val = f.get("value", "")
-            if isinstance(val, str):
-                conditions.append("\"" + col + "\" " + op + " '" + str(val) + "'")
-            elif isinstance(val, list):
-                vals_str = ", ".join("'" + str(v) + "'" for v in val)
-                conditions.append("\"" + col + "\" " + op + " (" + vals_str + ")")
-            else:
-                conditions.append("\"" + col + "\" " + op + " " + str(val))
-
-        # RLS 自动注入
-        rls_condition = self._build_rls_filters(intent.get("main_table", ""))
-        # 解析 RLS 用到的列（基于列名精确匹配）
-        rls_cols = set()
-        if rls_condition:
-            for col_name in ["employee_id", "dept_id", "id"]:
-                expected = chr(34) + col_name + chr(34)
-                if expected in rls_condition:
-                    rls_cols.add(col_name)
-        # 用户过滤条件（跳过 RLS 已覆盖的列）
+        """构建 WHERE 子句（只处理用户过滤条件，不注入 RLS）"""
         user_conds = []
         for f in intent.get("filters", []):
             col = f.get("column", "")
-            if col in rls_cols:
-                continue
             op = f.get("op", "=")
             val = f.get("value", "")
             if isinstance(val, str):
-                user_conds.append(chr(34) + col + chr(34) + " " + op + " '" + str(val) + "'")
+                user_conds.append("\"" + col + "\" " + op + " '" + str(val) + "'")
             elif isinstance(val, list):
-                vs = ", ".join("'" + str(v) + "'" for v in val)
-                user_conds.append(chr(34) + col + chr(34) + " " + op + " (" + vs + ")")
+                if op.upper() == "BETWEEN":
+                    user_conds.append("\"" + col + "\" BETWEEN '" + str(val[0]) + "' AND '" + str(val[1]) + "'")
+                else:
+                    vs = ", ".join("'" + str(v) + "'" for v in val)
+                    user_conds.append("\"" + col + "\" " + op + " (" + vs + ")")
             else:
-                user_conds.append(chr(34) + col + chr(34) + " " + op + " " + str(val))
-        # 合并：RLS 条件在前，用户条件在后
-        all_conds = []
-        if rls_condition:
-            all_conds.append(rls_condition)
-        all_conds.extend(user_conds)
-        return " AND ".join(all_conds) if all_conds else ""
-
-    def _build_rls_filters(self, main_table: str) -> str:
-        """根据用户 data_scope 自动注入行级过滤"""
-        role = self.user_info.get("role", "employee")
-        if role == "admin":
-            return ""
-
-        data_scope = self.user_info.get("data_scope", "team")
-        dept_id = self.user_info.get("dept_id")
-        employee_id = self.user_info.get("employee_id")
-
-        # 根据 data_scope 构建过滤
-        if data_scope == "self_only" and employee_id:
-            if main_table == "employees":
-                return "\"id\" = " + str(employee_id)
-            return "\"employee_id\" = " + str(employee_id)
-
-        if dept_id:
-            # team/dept/dept_and_sub: 按部门过滤
-            return "\"dept_id\" = " + str(dept_id)
-
-        return ""
+                user_conds.append("\"" + col + "\" " + op + " " + str(val))
+        return " AND ".join(user_conds) if user_conds else ""
 
     def _build_group_by(self, intent: dict) -> str:
         cols = intent.get("group_by", [])
+        if len(intent.get("join_tables", [])) > 0:
+            main_table = intent.get("main_table", "")
+            return ", ".join('\"' + main_table + '\".\"' + c + '\"' for c in cols) if cols else ""
         return ", ".join('\"' + c + '\"' for c in cols) if cols else ""
 
     def _build_order_by(self, intent: dict) -> str:
@@ -405,13 +418,8 @@ class SQLBuilder:
     def _build_limit(self, intent: dict) -> int | None:
         limit = intent.get("limit")
         if limit is None:
-            return 1000  # 默认限制
-        return min(int(limit), 5000)  # 硬上限
-
-
-# ============================================================
-# 5. 结果脱敏层
-# ============================================================
+            return 1000
+        return min(int(limit), 5000)
 def mask_sensitive_data(df: pd.DataFrame, intent: dict, user_info: dict, business_tag: str) -> pd.DataFrame:
     """对查询结果中的敏感字段进行脱敏"""
     role = user_info.get("role", "employee")
@@ -472,6 +480,7 @@ async def safe_query(question: str, agent, user_info: dict) -> dict:
 
     # Step 4: 执行 SQL
     try:
+        sql = normalize_sql_values(sql)
         df = agent.execute_sql(sql)
     except Exception as e:
         return {"status": "error", "error": "SQL 执行失败: " + str(e), "rejected": True}
@@ -486,3 +495,7 @@ async def safe_query(question: str, agent, user_info: dict) -> dict:
         "data": df_masked,
         "rejected": False,
     }
+
+
+
+

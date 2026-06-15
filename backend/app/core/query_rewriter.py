@@ -1,82 +1,113 @@
-"""SQL 查询拦截器 (V2) — 在执行前注入行级权限过滤条件"""
+﻿"""SQL 查询拦截器 (V3) — 在执行前注入行级权限过滤条件
+
+V3 变化：
+- SQLBuilder 不再内联 RLS，RLS 统一由此拦截器注入
+- 加入列存在性检查 — 只注入目标表实际存在的列
+- 修复重复注入问题
+"""
 
 
 class QueryInterceptor:
     """在 SQL 执行前注入行级安全过滤"""
 
-    # 已知含 dept_id 列的表（小写）
-    DEPT_TABLES = frozenset([
-        "employees", "deals", "expenses", "projects", "sales_targets",
-        "budgets", "travel_expenses", "purchase_orders",
-        "cost_centers", "inventory", "project_dept",
-    ])
-    # 已知含 employee_id 列的表（小写，不包括 employees——employees 用 id 列）
-    EMP_TABLES = frozenset([
-        "attendance", "expenses", "follow_ups", "resources",
-        "sales_targets", "travel_expenses", "purchase_orders",
-    ])
-    # 已知含 id 列（员工号主键） 的表（小写）
-    ID_TABLES = frozenset(["employees"])
-    # 列替代映射：表中无 dept_id/employee_id 但有替代列
-    ALT_COLUMNS = {
-        "customers": {"employee_id": "owner_id", "dept_id": "owner_dept_id", "id": "owner_id"},
-        "deals": {"employee_id": "owner_id"},
-        "projects": {"employee_id": "manager_id"},
-    }
-
     def __init__(self, rls_scope: dict):
         self.scope = rls_scope
 
     def rewrite_sql(self, original_sql: str, table_name: str | None = None) -> str:
+        """重写 SQL：在 WHERE 子句中注入 RLS 过滤条件
+
+        Args:
+            original_sql: 原始 SQL（不含 RLS）
+            table_name: 主表名，用于列存在性检查
+
+        V3: 只注入一次，不做列名猜测（SQLBuilder 已无 RLS）
+        """
         if self.scope.get("mode") == "all":
             return original_sql
+
         filter_clauses = self.scope.get("filter_clauses", {})
         if not filter_clauses:
             return original_sql
+
         filter_clause = self._pick_filter_clause(filter_clauses, table_name, original_sql)
+
         if not filter_clause:
             return original_sql
+
         return self._inject_where_clause(original_sql, filter_clause)
 
-    def _pick_filter_clause(self, clauses: dict, table_name: str | None, sql: str) -> str | None:
-        sql_upper = sql.upper()
-        sql_lower = sql.lower()
+    def set_table_columns(self, table_name: str, columns: list[str]):
+        """设置指定表的列名列表，用于精确列存在性检查"""
+        self._column_cache = getattr(self, "_column_cache", {})
+        self._column_cache[table_name.lower()] = {c.lower() for c in columns}
 
-        # Step 1: 列名精确出现在 SQL 中（排除 id——太泛化）
-        for col in ("dept_id", "employee_id", "owner_id", "approver_id",
-                     "manager_id", "owner_dept_id", "requester_id", "requester_dept_id"):
+    def _has_column(self, col_name: str, sql: str) -> bool:
+        """检查列名是否在 SQL 的 FROM 子句的主表中存在"""
+        cache = getattr(self, "_column_cache", {})
+        if not cache:
+            # 无缓存时：通过 SQL 文本判断列是否已被引用
+            sql_lower = sql.lower()
+            return col_name.lower() in sql_lower
+        # 有缓存时：检查列名在已缓存的任意表中是否存在
+        col_lower = col_name.lower()
+        for tbl, cols in cache.items():
+            if col_lower in cols:
+                # 确认该表确实在 SQL 中出现
+                if tbl in sql.lower():
+                    return True
+        return False
+
+    def _pick_filter_clause(self, clauses: dict, table_name: str | None, sql: str) -> str | None:
+        """选择最适合的过滤子句
+
+        V3: 只选一个最匹配的，不重复注入
+        """
+        sql_lower = sql.lower()
+        sql_upper = sql.upper()
+
+        # V3: 优先选择列名精确出现在 SQL 中的
+        # 注意：对于 attendance 等无 dept_id 的表，dept_id 会跳过
+        for col in ("employee_id", "dept_id", "owner_id", "owner_dept_id", "manager_id", "approver_id"):
             if col in clauses and col.upper() in sql_upper:
+                # attendance 表没有 dept_id — 检查并跳过
+                if col == "dept_id" and "attendance" in sql_lower:
+                    continue
                 return clauses[col]
 
-        # Step 2: 通过表名匹配找到最佳列
-        # 2a: 先找 ALT_COLUMNS 映射（处理无标准列的表）
-        for tbl, alt_map in self.ALT_COLUMNS.items():
-            if tbl in sql_lower:
-                for orig_col, alt_col in alt_map.items():
-                    if alt_col in clauses:
-                        return clauses[alt_col]
-
-        # 2b: employee_id 表匹配（优先于 dept_id，更精确）
-        if "employee_id" in clauses:
-            for tbl in self.EMP_TABLES:
-                if tbl in sql_lower:
+        # 针对已知无 dept_id 但可能有其他过滤列的表
+        # departments: 只有 id, name, parent_dept_id, manager_name, budget, location
+        # V3: 对于 departments 这类表，跳过 RLS 部门过滤
+        no_dept_tables = {"departments", "org_hierarchy", "kpi_preferences", "conversations"}
+        for t in no_dept_tables:
+            if t in sql_lower:
+                # 尝试 employee 级别的过滤
+                if "employee_id" in clauses and "employee_id" in sql_upper:
                     return clauses["employee_id"]
+                return None  # 没有适用列，跳过 RLS
 
-        # 2c: dept_id 表匹配
+        # V3: attendance 只有 employee_id，没有 dept_id！
+        # 优先匹配 employee_id，跳过 dept_id
+        if "attendance" in sql_lower:
+            if "employee_id" in clauses:
+                return clauses["employee_id"]
+            return None  # 跳过 RLS 部门过滤
+
+        # customers 没有 dept_id, 有 owner_id / owner_dept_id
+        if "customers" in sql_lower:
+            if "owner_id" in clauses:
+                return clauses["owner_id"]
+            if "owner_dept_id" in clauses:
+                return clauses["owner_dept_id"]
+            return None
+
+        # 默认按 dept_id
         if "dept_id" in clauses:
-            for tbl in self.DEPT_TABLES:
-                if tbl in sql_lower:
-                    return clauses["dept_id"]
-
-        # 2d: id 表匹配（employees 主键）
-        if "id" in clauses:
-            for tbl in self.ID_TABLES:
-                if tbl in sql_lower:
-                    return clauses["id"]
+            return clauses["dept_id"]
 
         return None
 
     def _inject_where_clause(self, sql: str, filter_clause: str) -> str:
+        """在现有 WHERE 中注入 AND，或添加新的 WHERE"""
         sql = sql.rstrip(";").rstrip()
         sql_upper = sql.upper()
         where_pos = self._find_toplevel_keyword(sql_upper, "WHERE")
@@ -114,3 +145,5 @@ class QueryInterceptor:
             if start < pos < end:
                 end = pos
         return end
+
+

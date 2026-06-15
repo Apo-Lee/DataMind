@@ -211,8 +211,8 @@ async def _get_user_kpi_prefs_from_db(user_id: str, ds_id: str, db: AsyncSession
         stmt = select(KpiPreference).where(KpiPreference.user_id == user_id, KpiPreference.datasource_id == ds_id)
         result = await db.execute(stmt)
         pref = result.scalar_one_or_none()
-        if pref and pref.enabled_ids:
-            return json.loads(pref.enabled_ids)
+        if pref and pref.enabled_kpi_ids:
+            return json.loads(pref.enabled_kpi_ids)
     except Exception:
         pass
     return []
@@ -224,7 +224,7 @@ async def _save_user_kpi_prefs_to_db(user_id: str, ds_id: str, enabled_ids: list
         result = await db.execute(stmt)
         pref = result.scalar_one_or_none()
         if pref:
-            pref.enabled_ids = json.dumps(enabled_ids)
+            pref.enabled_kpi_ids = json.dumps(enabled_ids)
         else:
             pref = KpiPreference(user_id=user_id, datasource_id=ds_id, enabled_ids=json.dumps(enabled_ids))
             db.add(pref)

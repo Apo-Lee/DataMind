@@ -25,6 +25,7 @@ from app.models.datasource import DataSource, DataSourcePermission
 from app.models.user import User, UserRole
 from app.schemas.query import AskRequest, AskResponse, ConversationResponse
 from app.core.llm_client import llm_client
+from app.orchestrator.errors import make_friendly_permission_error, make_friendly_error
 
 _SIMPLE_SUMMARY_PROMPT = """你是一个数据分析助手。根据用户的查询问题和 SQL 查询结果，用中文给出简短的分析总结。
 
@@ -102,9 +103,16 @@ async def ask_question(
     sql_elapsed_ms = round((time.time() - start_time) * 1000)
 
     if result.get("rejected"):
-        raise HTTPException(status_code=400, detail=result.get("error", "查询被拒绝"))
-
-    sql = result.get("sql", "")
+        error = result.get("error", "查询被拒绝")
+        friendly = make_friendly_permission_error(error)
+        return AskResponse(
+            conversation_id="",
+            intent="rejected",
+            analysis_depth="simple",
+            sql_generated="",
+            insights=[],
+            report_markdown=friendly.to_user_response()["report_markdown"],
+        )
     df = result.get("data", None)
     analysis_depth = intent.get("analysis_depth", "simple")
     insights = []

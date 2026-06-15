@@ -1,4 +1,4 @@
-"""DataMind FastAPI 入口 (V2)"""
+﻿"""DataMind FastAPI 入口 (V2)"""
 
 import logging
 from contextlib import asynccontextmanager
@@ -23,6 +23,14 @@ async def lifespan(app: FastAPI):
         await seed()
     except Exception as e:
         logger.warning(f"Seed 失败（可能非首次启动）: {e}")
+
+    # 预编译 LangGraph（可选提速）
+    try:
+        from app.orchestrator.graph.builder import get_compiled_graph
+        logger.info("预编译 LangGraph Agent 图...")
+        get_compiled_graph()
+    except Exception as e:
+        logger.warning(f"LangGraph 预编译跳过: {e}")
     yield
 
 
@@ -51,6 +59,11 @@ app.include_router(datasources_router)
 app.include_router(dashboard_router)
 app.include_router(query_router)
 
+
+# LangGraph Agent 路由（新增）
+from app.api.agent import router as agent_router
+app.include_router(agent_router)
+
 # V2: 管理后台 API (admin only)
 from app.api.admin.monitor import router as monitor_router
 from app.api.admin.audit_logs import router as audit_logs_router
@@ -68,3 +81,4 @@ app.include_router(permissions_router)
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "version": "0.2.0"}
+
