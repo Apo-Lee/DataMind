@@ -1,0 +1,90 @@
+/* DataMind — 智能矿物 视觉体系 */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+:root {
+  /* 色板 */
+  --dm-deep: #0B1120;
+  --dm-deep2: #131C36;
+  --dm-surface: #F7F8FC;
+  --dm-card: #FFFFFF;
+  --dm-primary: #5B5FE3;
+  --dm-primary-soft: #EEEEFD;
+  --dm-accent: #00C9A7;
+  --dm-accent-soft: #E6F9F5;
+  --dm-amber: #F59E0B;
+  --dm-amber-soft: #FFF8E6;
+  --dm-rose: #F43F5E;
+  --dm-rose-soft: #FFE4E9;
+  --dm-text: #1E293B;
+  --dm-text2: #475569;
+  --dm-muted: #94A3B8;
+  --dm-border: #E2E8F0;
+  --dm-border2: #F1F5F9;
+
+  /* 字体 */
+  --font-display: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-body: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+
+  /* 圆角 */
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+
+  /* 阴影 */
+  --shadow-card: 0 1px 3px rgba(11, 17, 32, 0.04), 0 1px 2px rgba(11, 17, 32, 0.03);
+  --shadow-card-hover: 0 4px 16px rgba(11, 17, 32, 0.06), 0 1px 4px rgba(11, 17, 32, 0.04);
+  --shadow-elevated: 0 8px 30px rgba(11, 17, 32, 0.08);
+
+  /* 过渡 */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* 全局重置 */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0; font-family: var(--font-body); font-size: 14px; line-height: 1.6;
+  color: var(--dm-text); background: var(--dm-surface);
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+}
+
+/* C) 全站统一轻量渐变背景 */
+body::before {
+  content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(ellipse 50% 30% at 20% 10%, rgba(91,95,227,0.025) 0%, transparent 50%),
+    radial-gradient(ellipse 40% 25% at 80% 90%, rgba(0,201,167,0.02) 0%, transparent 50%);
+}
+
+/* Element Plus 全局覆盖 */
+.el-button--primary {
+  --el-button-bg-color: var(--dm-primary); --el-button-border-color: var(--dm-primary);
+  --el-button-hover-bg-color: #4A4ED1; --el-button-hover-border-color: #4A4ED1;
+  font-weight: 600; border-radius: var(--radius-sm); letter-spacing: 0.01em;
+}
+.el-button { border-radius: var(--radius-sm); font-weight: 500; }
+.el-card { border-radius: var(--radius); border: 1px solid var(--dm-border); box-shadow: var(--shadow-card); }
+.el-table { border-radius: var(--radius); --el-table-border-color: var(--dm-border2); }
+.el-table th.el-table__cell { background: #F8FAFD; color: var(--dm-muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 2px solid var(--dm-border); }
+.el-dialog { border-radius: var(--radius-lg); box-shadow: var(--shadow-elevated); }
+.el-tag { border-radius: 6px; font-weight: 600; font-size: 12px; letter-spacing: 0.01em; }
+.el-input__wrapper, .el-input-number .el-input__wrapper { border-radius: var(--radius-sm); box-shadow: none; border: 1px solid var(--dm-border); transition: all 0.2s var(--ease-out); }
+.el-input__wrapper:hover { border-color: var(--dm-primary); }
+.el-select .el-input__wrapper { border-radius: var(--radius-sm); }
+.el-menu { border-right: none !important; }
+.el-empty__description { color: var(--dm-muted); }
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--dm-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--dm-muted); }
+
+/* 动画 */
+@keyframes fadeSlideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+@keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+.animate-in { animation: fadeSlideUp 0.5s var(--ease-out) forwards; }
+.skeleton { background: linear-gradient(90deg, var(--dm-border2) 25%, var(--dm-border) 50%, var(--dm-border2) 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; border-radius: var(--radius-sm); }

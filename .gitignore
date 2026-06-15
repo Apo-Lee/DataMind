@@ -1,0 +1,46 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.egg
+
+# === Virtual Environment ===
+.venv/
+.python-version
+
+# === Environment ===
+.env
+.env.local
+
+# === Node ===
+node_modules/
+dist/
+
+# === Database ===
+*.sqlite
+*.sqlite3
+*.db
+postgres-data/
+
+# === IDE ===
+.idea/
+.vscode/
+.claude/
+.superpowers/
+
+# === Logs / Temp ===
+*.log
+result.json
+uploads/
+
+# === pytest ===
+.pytest_cache/
+.pytest_cache
+
+# === Alembic ===
+.alembic/
+
+# === Docker ===
+.docker/
