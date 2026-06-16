@@ -436,6 +436,26 @@ def _normalize_sql_values(sql):
     return sql
 
 
+
+def _fix_join_columns_auto(sql: str) -> str:
+    import re
+    # Fix unquoted: employees.department_id -> employees.dept_id
+    sql = re.sub(r'employees\.department_id', 'employees.dept_id', sql)
+    # Fix quoted: "employees"."department_id" -> "employees"."dept_id"
+    sql = re.sub(r'"employees"\."department_id"', '"employees"."dept_id"', sql)
+    # Fix departments.department_id -> departments.id
+    sql = re.sub(r'departments\.department_id', 'departments.id', sql)
+    sql = re.sub(r'"departments"\."department_id"', '"departments"."id"', sql)
+    # Fix ambiguous COUNT("id") when JOIN exists: prefix with table name
+    if "LEFT JOIN" in sql and "COUNT(\"id\")" in sql:
+        m = re.search(r'FROM\s+\"?(\w+)\"?', sql)
+        if m:
+            tbl = m.group(1)
+            sql = sql.replace('COUNT(\"id\")', 'COUNT(\"' + tbl + '\".\"id\")')
+            sql = sql.replace('COUNT("id")', 'COUNT("' + tbl + '"."id")')
+    return sql
+
+
 async def generate_sql(question: str, agent) -> dict:
     """生成安全的 SQL 查询"""
     tables = agent.list_tables()
@@ -465,6 +485,7 @@ async def generate_sql(question: str, agent) -> dict:
         result = json.loads(content)
         sql = result.get("sql", "").strip()
         sql = _normalize_sql_values(sql)
+        sql = _fix_join_columns_auto(sql)
         sql_upper = sql.upper()
 
         # 权限规则引擎校验（B层：SQL越权检测）

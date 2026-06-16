@@ -113,6 +113,8 @@ async def ask_question(
             insights=[],
             report_markdown=friendly.to_user_response()["report_markdown"],
         )
+    
+    sql = result.get("sql", "")
     df = result.get("data", None)
     analysis_depth = intent.get("analysis_depth", "simple")
     insights = []
@@ -137,17 +139,24 @@ async def ask_question(
         if df is not None and not df.empty:
             insights.append({"type": "table", "content": df.head(50).to_dict(orient="records")})
             try:
-                summary_data = _build_simple_summary(body.question, sql, df)
-                summary_msg = await llm_client.chat([
-                    {"role": "system", "content": _SIMPLE_SUMMARY_PROMPT},
-                    {"role": "user", "content": summary_data},
-                ])
-                summary_text = summary_msg.get("content", "")
-                if summary_text:
-                    insights.insert(0, {"type": "text", "content": summary_text})
+                analysis_for_report = {
+                    "status": analysis_result.get("status") if analysis_result else "success",
+                    "data": {
+                        "insight": analysis_result.get("data", {}).get("insight", "") if analysis_result and analysis_result.get("status") == "success" else "",
+                        "table": analysis_result.get("data", {}).get("table", []) if analysis_result and analysis_result.get("status") == "success" else [],
+                    }
+                } if analysis_result else None
+                report_md = await assemble_report(
+                    question=body.question,
+                    sql=sql,
+                    df=df,
+                    intent=intent,
+                    analysis_result=analysis_for_report,
+                )
             except Exception:
                 pass
-        report_md = _build_simple_report(body.question, sql, df)
+        if not report_md:
+            report_md = _build_simple_report(body.question, sql, df)
 
     if df is not None and not df.empty and not insights:
         insights.append({"type": "table", "content": df.head(50).to_dict(orient="records")})

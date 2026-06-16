@@ -168,7 +168,7 @@ def route_by_intent(state: dict) -> str:
     intent_result = state.get("intent_result")
 
     if intent_result is None or intent_result.status != "success":
-        return "sql_node"
+        return "report_node"
 
     intent = intent_result.intent_type
 
@@ -190,12 +190,13 @@ def route_after_sql(state: dict) -> str:
     intent_result = state.get("intent_result")
 
     if sql_result is None or sql_result.status != "success":
+        if intent_result and intent_result.analysis_depth == "complex":
+            return "analysis_node"
         return "report_node"
 
-    # 如果意图是深度分析且数据非空
+    # 如果意图是深度分析
     if intent_result and intent_result.analysis_depth == "complex":
-        if sql_result.df is not None and not sql_result.df.empty:
-            return "analysis_node"
+        return "analysis_node"
 
     return "report_node"
 

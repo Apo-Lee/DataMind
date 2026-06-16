@@ -55,7 +55,7 @@ class TestAgentRouting:
             intent_result=IntentResult(
                 status="success",
                 intent_type=IntentType.trend,
-                analysis_depth="complex",
+                analysis_depth="simple",
             ),
             context=AgentContext(),
         )
@@ -119,22 +119,22 @@ class TestAgentRouting:
                 df=pd.DataFrame(),
             ),
         )
-        assert route_after_sql(state) == "report_node"
+        assert route_after_sql(state) == "analysis_node"
 
-    def test_intent_result_none_fallback_to_sql(self):
+    def test_intent_result_none_fallback_to_report(self):
         state = AgentState(
             question="test",
             context=AgentContext(),
         )
-        assert route_by_intent(state) == "sql_node"
+        assert route_by_intent(state) == "report_node"
 
-    def test_intent_result_error_fallback_to_sql(self):
+    def test_intent_result_error_fallback_to_report(self):
         state = AgentState(
             question="test",
             intent_result=IntentResult(status="error", error="failed"),
             context=AgentContext(),
         )
-        assert route_by_intent(state) == "sql_node"
+        assert route_by_intent(state) == "report_node"
 
 
 class TestAgentStateSchema:

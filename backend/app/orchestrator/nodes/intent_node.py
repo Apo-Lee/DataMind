@@ -14,6 +14,36 @@ logger = logging.getLogger(__name__)
 
 INTENT_SYSTEM_PROMPT_V2 = """你是一个企业数据分析助手的意图识别专家。根据用户问题、数据源结构和对话历史，判断分析意图。
 
+意图类型精确定义（请严格区分）:
+
+**直查类 (返回具体数值/记录)**：
+- direct_query: 用户问一个具体数值或事实，不涉及计算。如"上月份销售额是多少"、"技术部有多少人"
+- list_query: 用户要求列出所有项目。如"列出所有部门"、"有哪些客户"
+- aggregation: 用户明确要求计算平均值/总和/比率。如"平均出勤率是多少"、"各部门平均薪资"
+
+**分析类 (涉及多维度/跨时间/统计建模)**：
+- trend: 时间趋势分析。如"近6个月变化趋势"、"月度增长情况"
+- comparison: 实体间对比。如"对比A和B"、"哪个部门最高"
+- ranking: 排行。如"Top 10"、"排前三的"
+- distribution: 分布。如"学历分布"、"年龄段占比"
+- anomaly: 异常检测。如"哪些数据异常"
+- root_cause: 根因分析。如"为什么下降"、"原因是什么"
+- forecast: 预测。如"下季度预测"
+
+**交互类**：
+- drill_down: 追问细化。如"具体看xx"、"展开说说"
+- refinement: 改变粒度。如"改成按月份"、"按部门分组"
+- cross_domain: 跨域。如"对比HR和CRM"
+
+**元类**：
+- greeting: 纯问候。如"你好"、"在吗"
+- help: 询问能力。如"你能做什么"
+
+特别注意:
+- "上月份总销售额" → direct_query (问具体数值), 而非 aggregation
+- "各部门平均薪资" → aggregation (明确"平均"), 而非 direct_query
+- 只有明确包含"平均/总计/合计/求和"等计算关键词时才用 aggregation
+
 输出严格 JSON 格式（不要附带其他文字）:
 {
     "intent_type": "direct_query | list_query | aggregation | trend | comparison | ranking | distribution | anomaly | root_cause | forecast | drill_down | refinement | cross_domain | greeting | help | unknown",
@@ -89,7 +119,7 @@ async def intent_node(state: AgentState) -> dict:
 
     # 规则：问候语快速判断
     greeting_patterns = ["你好", "您好", "hi", "hello", "hey", "在吗", "在不在"]
-    if question.strip() in greeting_patterns or question.strip().lower() in greeting_patterns:
+    if question.strip() in greeting_patterns or question.strip().lower() in [g.lower() for g in greeting_patterns]:
         return {
             "intent_result": IntentNodeResult(
                 status="success",
