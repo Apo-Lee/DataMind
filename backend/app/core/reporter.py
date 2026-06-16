@@ -1,4 +1,4 @@
-"""报告组装 Agent — 将分析结果组装为 Markdown 报告"""
+﻿"""报告组装 Agent — 将分析结果组装为 Markdown 报告"""
 
 import pandas as pd
 
@@ -86,5 +86,7 @@ async def assemble_report(
             {"role": "user", "content": user_msg},
         ])
         return msg.get("content", "# 分析报告\n\n报告生成失败，请重试。")
-    except Exception:
+    except Exception as e:
+        logger.warning(f"assemble_report LLM failed: {e}")
         return f"# 分析报告\n\n## 查询\n{question}\n\n## 数据\n{_df_to_markdown_table(df.head(20))}"
+

@@ -1,46 +1,13 @@
-# === Python ===
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
-dist/
-*.egg
-
-# === Virtual Environment ===
-.venv/
-.python-version
-
-# === Environment ===
-.env
-.env.local
-
-# === Node ===
-node_modules/
-dist/
-
-# === Database ===
+﻿_test_*.py
+backend/_test_*.py
+backend/_e2e_*.py
+backend/test_*.ps1
+_response*.md
+_response_*/
 *.sqlite
-*.sqlite3
-*.db
-postgres-data/
-
-# === IDE ===
-.idea/
-.vscode/
-.claude/
-.superpowers/
-
-# === Logs / Temp ===
-*.log
-result.json
-uploads/
-
-# === pytest ===
-.pytest_cache/
-.pytest_cache
-
-# === Alembic ===
-.alembic/
-
-# === Docker ===
-.docker/
+__pycache__/
+*.pyc
+.env
+datamind.db
+frontend/dist/
+frontend/node_modules/
