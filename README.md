@@ -10,7 +10,7 @@ DataMind 是一个面向企业白领的 **AI 数据自助分析平台**。管理
 
 ## 系统架构
 
-`
+```
 用户 (HTTP Request)
      │ POST /api/query/ask + JWT Token
      ▼
@@ -63,7 +63,7 @@ DataMind 是一个面向企业白领的 **AI 数据自助分析平台**。管理
                           │
                           ▼
                     响应返回 (report_markdown + insights)
-`
+```
 
 ## MCP Server 架构
 
