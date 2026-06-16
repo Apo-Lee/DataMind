@@ -11,7 +11,7 @@ import logging
 from app.agents.factory import agent_factory
 from app.agents.intent import detect_intent
 from app.agents.sql_agent import generate_sql
-from app.core.query_engine import safe_query
+from app.core.query_engine import safe_query, mcp_safe_query
 from app.agents.analysis_agent import analyze
 from app.core.audit import write_audit_log
 from app.core.auth import get_current_user, get_role_str
@@ -99,7 +99,7 @@ async def ask_question(
     intent = await detect_intent(body.question, ds.schema_summary)
 
     start_time = time.time()
-    result = await safe_query(body.question, agent, user_info)
+    result = await mcp_safe_query(body.question, agent, user_info)
     sql_elapsed_ms = round((time.time() - start_time) * 1000)
 
     if result.get("rejected"):
@@ -136,25 +136,23 @@ async def ask_question(
             intent=intent, analysis_result=analysis_result,
         )
     else:
+        report_md = None
         if df is not None and not df.empty:
             insights.append({"type": "table", "content": df.head(50).to_dict(orient="records")})
+            analysis_for_report = {
+                "status": analysis_result.get("status") if analysis_result else "success",
+                "data": {
+                    "insight": analysis_result.get("data", {}).get("insight", "") if analysis_result and analysis_result.get("status") == "success" else "",
+                    "table": analysis_result.get("data", {}).get("table", []) if analysis_result and analysis_result.get("status") == "success" else [],
+                }
+            } if analysis_result else None
             try:
-                analysis_for_report = {
-                    "status": analysis_result.get("status") if analysis_result else "success",
-                    "data": {
-                        "insight": analysis_result.get("data", {}).get("insight", "") if analysis_result and analysis_result.get("status") == "success" else "",
-                        "table": analysis_result.get("data", {}).get("table", []) if analysis_result and analysis_result.get("status") == "success" else [],
-                    }
-                } if analysis_result else None
                 report_md = await assemble_report(
-                    question=body.question,
-                    sql=sql,
-                    df=df,
-                    intent=intent,
-                    analysis_result=analysis_for_report,
+                    question=body.question, sql=sql, df=df,
+                    intent=intent, analysis_result=analysis_for_report,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"assemble_report failed: {e}")
         if not report_md:
             report_md = _build_simple_report(body.question, sql, df)
 

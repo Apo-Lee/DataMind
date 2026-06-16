@@ -1,4 +1,4 @@
-﻿"""DataMind FastAPI 入口 (V2)"""
+"""DataMind FastAPI 入口 (V2)"""
 
 import logging
 from contextlib import asynccontextmanager

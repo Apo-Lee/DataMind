@@ -1,7 +1,7 @@
-"""Orchestrator Agent — DataMind 多 Agent 编排主入口
+﻿"""Orchestrator Agent — DataMind 多 Agent 编排主入口
 
 Orchestrator 是用户和 LangGraph 之间的桥梁：
-1. 初始化 AgentContext
+1. 初始化 AgentContext（含用户对象引用）
 2. 管理会话状态（多轮对话记忆）
 3. 调用 LangGraph 图执行
 4. 组装最终响应
@@ -89,7 +89,7 @@ class OrchestratorAgent:
         ds = ds_result.scalar_one_or_none()
         business_tag = ds.business_tag if ds else ""
 
-        # 构建 AgentContext
+        # 构建 AgentContext — 传递原始 User 引用给下游节点
         context = AgentContext(
             user_role=self.user.role.value if hasattr(self.user.role, "value") else str(self.user.role),
             user_data_scope=self.user.data_scope.value if hasattr(self.user.data_scope, "value") else str(self.user.data_scope),
@@ -104,6 +104,7 @@ class OrchestratorAgent:
             datasource_id=self.datasource_id,
             business_tag=business_tag,
             db_session=self.db,
+            user_ref=self.user,  # 直接传递 User ORM 对象
         )
 
         # 构建 AgentState
@@ -147,12 +148,28 @@ class OrchestratorAgent:
 
             return response
 
+        except AgentFriendlyError as e:
+            # 已知友好的异常
+            logger.warning(f"Agent Friendly Error: {e.detail}")
+            friendly_resp = e.to_user_response()
+            return {
+                "session_id": self.session_id,
+                "turn_id": turn_id,
+                "question": question,
+                "intent": "error",
+                "analysis_depth": "simple",
+                "sql_generated": "",
+                "insights": [],
+                "report_markdown": friendly_resp["report_markdown"],
+                "followups": friendly_resp["followups"],
+                "conversation_history": turn_history or [],
+                "error": friendly_resp["error"],
+                "error_type": friendly_resp["error_type"],
+            }
         except Exception as e:
-            logger.error(f"Agent \xe6\x89\xa7\xe8\xa1\x8c\xe5\xa4\xb1\xe8\xb4\xa5: {e}", exc_info=True)
-            if isinstance(e, AgentFriendlyError):
-                friendly = e
-            else:
-                friendly = make_friendly_error("unknown", str(e))
+            # 未知异常
+            logger.error(f"Agent 执行异常: {e}", exc_info=True)
+            friendly = make_friendly_error("unknown_error", str(e))
             friendly_resp = friendly.to_user_response()
             return {
                 "session_id": self.session_id,
@@ -176,7 +193,6 @@ class OrchestratorAgent:
             intent_type = intent_result.intent_type.value if intent_result else "unknown"
             depth = intent_result.analysis_depth if intent_result else "simple"
 
-            # 更新历史记录
             history_entry = {
                 "id": turn_id,
                 "session_id": session_id,
@@ -200,14 +216,13 @@ class OrchestratorAgent:
                 "conversation_history": history,
                 "error": None,
             }
-        # error handling with friendly messages
+
         error_msg = "处理失败"
         if report_result:
             error_msg = report_result.error or error_msg
         elif sql_result:
             error_msg = sql_result.error or error_msg
 
-        # use friendly error if available
         if report_result and getattr(report_result, "error_type", None):
             sql_str = getattr(sql_result, "sql", "") if sql_result else ""
             friendly = make_friendly_error(

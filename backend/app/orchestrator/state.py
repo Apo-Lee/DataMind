@@ -22,27 +22,27 @@ from langgraph.managed import IsLastStep
 class IntentType(str, enum.Enum):
     """Agent 意图分类体系"""
     # 直查类
-    direct_query = "direct_query"           # "销售额多少"
-    list_query = "list_query"               # "列出所有部门"
-    aggregation = "aggregation"             # "平均出勤率"
+    direct_query = "direct_query"
+    list_query = "list_query"
+    aggregation = "aggregation"
 
     # 分析类
-    trend = "trend"                         # "近6个月趋势"
-    comparison = "comparison"              # "对比各部门"
-    ranking = "ranking"                     # "Top 10"
-    distribution = "distribution"           # "学历分布"
-    anomaly = "anomaly"                     # "哪些数据异常"
-    root_cause = "root_cause"              # "为什么下降"
-    forecast = "forecast"                   # "下季度预测"
+    trend = "trend"
+    comparison = "comparison"
+    ranking = "ranking"
+    distribution = "distribution"
+    anomaly = "anomaly"
+    root_cause = "root_cause"
+    forecast = "forecast"
 
     # 交互类
-    drill_down = "drill_down"               # "具体看..."
-    refinement = "refinement"               # "改按月份"
-    cross_domain = "cross_domain"          # "和HR对比"
+    drill_down = "drill_down"
+    refinement = "refinement"
+    cross_domain = "cross_domain"
 
     # 元类
-    greeting = "greeting"                   # "你好"
-    help = "help"                           # "你能做什么"
+    greeting = "greeting"
+    help = "help"
     unknown = "unknown"
 
 
@@ -73,6 +73,9 @@ class AgentContext:
 
     # 数据库 session（运行时注入）
     db_session: Any = None
+
+    # V3: 原始 User 对象引用（用于 RLS 引擎等需要完整 User 对象的场景）
+    user_ref: Any = None
 
 
 @dataclass
@@ -141,7 +144,7 @@ class AgentState(MessagesState):
 
     # 原始输入
     question: str = ""
-    original_question: str = ""    # 追问时保留原始问题
+    original_question: str = ""
 
     # 各节点输出
     intent_result: Optional[IntentResult] = None
@@ -155,12 +158,11 @@ class AgentState(MessagesState):
     max_retries: int = 2
 
     # 会话追踪
-    turn_history: list[dict] = field(default_factory=list)  # 前几轮的摘要
+    turn_history: list[dict] = field(default_factory=list)
 
 
 # ============================================================
-# 路由函数：根据 intent 决定下一个节点
-# 注意：LangGraph 传入的是 dict（由 TypedDict 生成），不是 dataclass
+# 路由函数
 # ============================================================
 
 def route_by_intent(state: dict) -> str:
@@ -194,7 +196,6 @@ def route_after_sql(state: dict) -> str:
             return "analysis_node"
         return "report_node"
 
-    # 如果意图是深度分析
     if intent_result and intent_result.analysis_depth == "complex":
         return "analysis_node"
 

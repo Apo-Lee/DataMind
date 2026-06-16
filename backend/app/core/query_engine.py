@@ -1,316 +1,267 @@
-﻿# -*- coding: utf-8 -*-
-"""查询引擎 - 将结构化查询意图翻译为受控的 SQL 查询
-
-核心思路：LLM 不直接生成 SQL，而是生成结构化查询意图（JSON Schema），
-由引擎根据用户权限白名单生成安全的 SQL。
-这样确保 0 越权风险。
+# -*- coding: utf-8 -*-
+"""查询引擎 V3 — 最终稳定版本
 """
-
-import json
-import logging
-import re
+import json, logging
 from typing import Any
-
 import pandas as pd
-
 from app.core.llm_client import llm_client
 
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# 1. 敏感字段配置（白名单模式：未列出的就是可查的）
-# ============================================================
-# 格式：{business_tag: {table: {column: sensitivity_level}}}
-# sensitivity_level: "safe" | "sensitive" | "highly_sensitive"
 _COLUMN_SENSITIVITY = {
     "hr": {
         "employees": {
-            "salary": "highly_sensitive",
-            "phone": "sensitive",
-            "email": "sensitive",
-            "name": "safe",
-            "dept_id": "safe",
-            "position": "safe",
-            "level": "safe",
-            "status": "safe",
-            "join_date": "safe",
-            "performance_score": "safe",
-            "manager_id": "safe",
-            "position_category": "safe",
-            "gender": "safe",
-            "education": "safe",
+            "salary": "highly_sensitive", "phone": "sensitive", "email": "sensitive",
+            "name": "safe", "dept_id": "safe", "position": "safe",
+            "level": "safe", "status": "safe", "join_date": "safe",
+            "performance_score": "safe", "manager_id": "safe",
+            "position_category": "safe", "gender": "safe", "education": "safe",
             "id": "safe",
         },
         "departments": {
-            "budget": "sensitive",
-            "name": "safe",
-            "manager_name": "safe",
-            "location": "safe",
-            "parent_dept_id": "safe",
-            "id": "safe",
+            "budget": "sensitive", "name": "safe", "manager_name": "safe",
+            "location": "safe", "parent_dept_id": "safe", "id": "safe",
         },
         "attendance": {
-            "check_in": "safe",
-            "check_out": "safe",
-            "status": "safe",
-            "date": "safe",
-            "employee_id": "safe",
-            "id": "safe",
+            "check_in": "safe", "check_out": "safe", "status": "safe",
+            "date": "safe", "employee_id": "safe", "id": "safe",
         },
-        "org_hierarchy": {
-            "ancestor_id": "safe",
-            "descendant_id": "safe",
-            "depth": "safe",
-        },
+        "org_hierarchy": {"ancestor_id": "safe", "descendant_id": "safe", "depth": "safe"},
     },
     "crm": {
         "customers": {
-            "phone": "sensitive",
-            "email": "sensitive",
-            "name": "safe",
-            "industry": "safe",
-            "level": "safe",
-            "contact_person": "safe",
-            "status": "safe",
-            "id": "safe",
+            "phone": "sensitive", "email": "sensitive",
+            "name": "safe", "industry": "safe", "level": "safe",
+            "contact_person": "safe", "created_date": "safe",
+            "owner_id": "safe", "owner_dept_id": "safe", "id": "safe",
         },
         "deals": {
-            "amount": "safe",
-            "status": "safe",
-            "close_date": "safe",
-            "probability": "safe",
-            "title": "safe",
-            "customer_id": "safe",
+            "amount": "safe", "status": "safe", "close_date": "safe",
+            "probability": "safe", "title": "safe", "customer_id": "safe",
+            "stage": "safe", "created_date": "safe",
+            "expected_close_date": "safe", "owner_id": "safe",
+            "dept_id": "safe", "id": "safe",
+        },
+        "follow_ups": {
+            "type": "safe", "content": "safe", "next_action": "safe",
+            "date": "safe", "customer_id": "safe", "employee_id": "safe",
             "id": "safe",
+        },
+        "sales_targets": {
+            "target_amount": "safe", "achieved_amount": "safe",
+            "year": "safe", "quarter": "safe",
+            "employee_id": "safe", "dept_id": "safe", "id": "safe",
         },
     },
     "finance": {
         "expenses": {
-            "amount": "safe",
-            "category": "safe",
-            "date": "safe",
-            "status": "safe",
-            "description": "safe",
-            "dept_id": "safe",
-            "id": "safe",
+            "amount": "safe", "category": "safe", "date": "safe",
+            "status": "safe", "description": "safe", "dept_id": "safe",
+            "employee_id": "safe", "approver_id": "safe",
+            "expense_type": "safe", "project_code": "safe", "id": "safe",
         },
+        "budgets": {
+            "amount": "safe", "used": "safe", "remaining_adj": "safe",
+            "year": "safe", "quarter": "safe", "category": "safe",
+            "budget_type": "safe", "dept_id": "safe",
+            "approver_id": "safe", "id": "safe",
+        },
+        "cost_centers": {"name": "safe", "budget_total": "safe", "budget_remaining": "safe", "fiscal_year": "safe", "dept_id": "safe", "id": "safe"},
+        "travel_expenses": {"departure_date": "safe", "return_date": "safe", "destination": "safe", "purpose": "safe", "transport_fee": "safe", "hotel_fee": "safe", "meal_fee": "safe", "other_fee": "safe", "expense_id": "safe", "employee_id": "safe", "id": "safe"},
+    },
+    "erp": {
+        "inventory": {"item_code": "safe", "name": "safe", "category": "safe", "quantity": "safe", "unit_price": "safe", "warehouse": "safe", "dept_id": "safe", "min_stock": "safe", "max_stock": "safe", "supplier_name": "safe", "id": "safe"},
+        "projects": {"name": "safe", "project_code": "safe", "status": "safe", "budget": "safe", "actual_cost": "safe", "start_date": "safe", "end_date": "safe", "priority": "safe", "dept_id": "safe", "manager_id": "safe", "id": "safe"},
+        "project_dept": {"project_id": "safe", "dept_id": "safe", "role": "safe", "id": "safe"},
+        "purchase_orders": {"item_name": "safe", "quantity": "safe", "unit_price": "safe", "total_amount": "safe", "status": "safe", "order_date": "safe", "expected_date": "safe", "dept_id": "safe", "requester_id": "safe", "approver_id": "safe", "id": "safe"},
+        "resources": {"project_id": "safe", "employee_id": "safe", "role": "safe", "allocation_pct": "safe", "daily_cost": "safe", "start_date": "safe", "end_date": "safe", "id": "safe"},
     },
 }
 
-# 角色可以查看的敏感级别
 _ROLE_SENSITIVITY_ACCESS = {
     "admin": {"safe", "sensitive", "highly_sensitive"},
     "hr_director": {"safe", "sensitive", "highly_sensitive"},
-    "finance_bp": {"safe", "sensitive"},
-    "finance_director": {"safe", "sensitive"},
-    "dept_ceo": {"safe", "sensitive"},  # V3: 提升到 sensitive
-    "dept_manager": {"safe", "sensitive"},  # V3: 提升到 sensitive
-    "sales_manager": {"safe", "sensitive"},  # V3: 提升到 sensitive
-    "employee": {"safe"},
-    "viewer": {"safe"},
+    "finance_bp": {"safe", "sensitive"}, "finance_director": {"safe", "sensitive"},
+    "dept_ceo": {"safe", "sensitive"}, "dept_manager": {"safe", "sensitive"},
+    "sales_manager": {"safe", "sensitive"},
+    "employee": {"safe"}, "viewer": {"safe"},
 }
 
+_QUERY_INTENT_PROMPT = """你是一个数据分析助手。根据用户问题，输出结构化的查询意图 JSON。
 
-# ============================================================
-# 2. 查询意图 Schema
-# ============================================================
-_QUERY_INTENT_PROMPT = """你是一个数据分析助手。根据用户的自然语言问题，输出结构化的查询意图 JSON。
+用户上下文（必须使用真实值，禁止使用占位符）：
+- 当前用户角色: {user_role}
+- 用户 employee_id: {user_employee_id}
+- 用户部门 dept_id: {user_dept_id}
+- 数据范围: {user_scope}
 
 可查询的表和列：
 {tables_desc}
 
-输出严格 JSON 格式（不要附带其他文字）：
-{{
-    "question_type": "simple_query | count | aggregation | list | trend",
-    "main_table": "主表名",
-    "join_tables": ["关联表1", "关联表2"],
-    "select_columns": ["列名1", "列名2"],
-    "aggregations": [
-        {{"type": "COUNT|SUM|AVG|MAX|MIN", "column": "列名", "alias": "别名"}}
-    ],
-    "filters": [
-        {{"column": "列名", "op": "=|!=|>|<|>=|<=|IN|LIKE|BETWEEN", "value": "值"}}
-    ],
-    "group_by": ["列名"],
-    "order_by": [{{"column": "列名", "direction": "ASC|DESC"}}],
-    "limit": 数字,
-    "explanation": "对这个查询的简短解释"
-}}
+输出严格 JSON：
+{{"question_type":"count|aggregation|list|trend","main_table":"主表名","join_tables":["关联表"],"select_columns":["列名"],"aggregations":[{{"type":"COUNT|SUM|AVG|MAX|MIN","column":"列名","alias":"别名"}}],"filters":[{{"column":"列名","op":"=|>=|<=|!=","value":"值"}}],"group_by":["列名"],"order_by":[{{"column":"列名","direction":"ASC|DESC"}}],"limit":数字}}
 
 规则：
-- select_columns: 只放用户想看到的最终显示列。当有 GROUP BY 时，select_columns 中只能包含 GROUP BY 列或聚合列
-- 如果用户问总数/平均值/分布/占比等，用 aggregations 而不是 select_columns
-- 任何带有"分布"、"占比"、"比例"、"统计"关键词的问题，必须同时有 group_by 和 aggregations（COUNT）
-- 例如"统计各部门的员工人数"：group_by=["dept_id"], select_columns=["dept_id"], aggregations=[{"type":"COUNT","column":"id","alias":"employee_count"}]
-- 过滤条件中的值使用数据库中实际存在的中文值
-- 日期过滤使用 YYYY-MM-DD 格式
-- 如果涉及"部门"，先查 departments 表的部门名称
+1. 列名不加表名前缀
+2. select_columns 中不允许 strftime/CASE/聚合函数
+3. 过滤值用中文（在职/出勤/赢单/已审批）
+4. 日期用 YYYY-MM-DD
+5. 不要用 "dept_id" 过滤 departments 表（departments 表没有 dept_id 只有 id）
+6. attendance 表没有 dept_id 和 name 列
+7. 统计某部门人数时直接用 main_table 过滤 dept_id，不需要 JOIN departments
+8. 【重要】filter 中的 value 必须使用用户上下文中的真实数字ID，禁止使用占位符如 "当前用户ID"、"?", "当前部门ID" 等文本字符串
+9. 【重要】用户角色为 employee 时，必须根据用户上下文使用自己的 employee_id 过滤数据
+10. 【重要】查询薪资/工资/薪酬相关的列时，检查列是否包含 salary 关键字，如果用户角色不是 admin/hr_director/finance_director，则拒绝查询
+11. 【重要】filter 的 value 只能是具体的字符串或数字值，不能使用子查询(subquery/SELECT)，不能使用 IN 子句以外的SQL语法
 """
 
 
-
-_V3_NORMALIZE_STATUS_FIXES = [
-    ('present', '出勤'),
-    ('normal', '出勤'),
-    ('absent', '缺勤'),
-    ('leave', '请假'),
-    ('late', '迟到'),
-    ('active', '在职'),
-    ('employed', '在职'),
-    ('resigned', '离职'),
-    ('inactive', '离职'),
-    ('probation', '试用期'),
-    ('won', '赢单'),
-    ('lost', '输单'),
-    ('closed_won', '赢单'),
-    ('closed_lost', '输单'),
-    ('in_progress', '进行中'),
-    ('completed', '已完成'),
-    ('planned', '规划中'),
-    ('pending', '待审批'),
-    ('approved', '已审批'),
-    ('rejected', '驳回'),
-    ('paid', '已支付'),
-]
-
-
-def normalize_sql_values(sql: str) -> str:
-    """自动修正 SQL 中常见的枚举值错误"""
-    for eng, chn in _V3_NORMALIZE_STATUS_FIXES:
-        sql = sql.replace("'" + eng + "'", "'" + chn + "'")
-        sql = sql.replace('"' + eng + '"', "'" + chn + "'")
-    return sql
-
 def _build_tables_desc(agent) -> str:
-    """生成给 LLM 看的表和列描述（不含敏感字段级别）"""
     tables = agent.list_tables()
     lines = []
     for t in tables:
         ts = agent.describe_table(t)
-        cols = []
-        for c in ts.columns:
-            cols.append(c.name + "(" + c.dtype + ")")
+        cols = [c.name + "(" + c.dtype + ")" for c in ts.columns]
         lines.append("  - " + t + ": " + ", ".join(cols))
-    return chr(10).join(lines)
+    return "\n".join(lines)
 
 
-async def parse_query_intent(question: str, agent) -> dict:
-    """Step 1: LLM 将自然语言解析为结构化查询意图"""
+def _build_intent_prompt(question: str, tables_desc: str, user_info: dict | None = None) -> str:
+    """构建意图识别提示，注入用户上下文"""
+    if user_info:
+        role = str(user_info.get("role", "employee"))
+        emp_id = str(user_info.get("employee_id", "未知"))
+        dept_id = str(user_info.get("dept_id", "未知"))
+        scope = str(user_info.get("data_scope", "unknown"))
+        context = (
+            "用户上下文（必须使用下面的真实值）:\n"
+            "- 当前角色: " + role + "\n"
+            "- employee_id: " + emp_id + "\n"
+            "- dept_id: " + dept_id + "\n"
+            "- 数据范围: " + scope + "\n\n"
+        )
+    else:
+        context = ""
+    prompt_body = _QUERY_INTENT_PROMPT.replace("{tables_desc}", tables_desc)
+    return context + prompt_body + "\n\n用户问题: " + question
+
+
+async def parse_query_intent(question: str, agent, user_info: dict | None = None) -> dict:
     tables_desc = _build_tables_desc(agent)
-    user_msg = _QUERY_INTENT_PROMPT.replace("{tables_desc}", tables_desc)
-    user_msg += "\n\n用户问题: " + question
-
     msg = await llm_client.chat([
-        {"role": "system", "content": "你是一个严格输出 JSON 的数据分析助手。"},
-        {"role": "user", "content": user_msg},
+        {"role": "system", "content": "只输出 JSON 对象，无任何其他文字。"},
+        {"role": "user", "content": _build_intent_prompt(question, tables_desc, user_info)},
     ])
-
     content = msg.get("content", "{}").strip()
     if "{" in content:
         content = content[content.index("{"):content.rindex("}") + 1]
     intent = json.loads(content)
-    # V3.3: 清除 LLM 可能添加的表名前缀（如 "departments.name" -> "name"）
+
+    # 后处理：修复占位符值为真实用户ID
+    if user_info:
+        emp_id = str(user_info.get("employee_id", ""))
+        dept_id = str(user_info.get("dept_id", ""))
+        placeholders = {
+            "当前用户ID": emp_id,
+            "当前用户employee_id": emp_id,
+            "当前部门ID": dept_id,
+            "当前角色ID": emp_id,
+            "当前用户": emp_id,
+            "{user_employee_id}": emp_id,
+            "{user_dept_id}": dept_id,
+        }
+        for f in intent.get("filters", []):
+            val = f.get("value", "")
+            if val in placeholders and placeholders[val]:
+                f["value"] = placeholders[val]
+
     tables = [intent.get("main_table", "")] + intent.get("join_tables", [])
-    for key in ("select_columns", "group_by"):
-        cols = intent.get(key, [])
-        cleaned = []
-        for c in cols:
-            for t in tables:
-                prefix = t + "."
-                if c.startswith(prefix):
-                    c = c[len(prefix):]
-                    break
-            cleaned.append(c)
-        intent[key] = cleaned
-    # 同样清除聚合列中的表名前缀
+    for key in ("select_columns", "group_by", "order_by"):
+        items = intent.get(key, [])
+        if isinstance(items, list):
+            cleaned = []
+            for c in items:
+                col = c.get("column", c) if isinstance(c, dict) else c
+                for t in tables:
+                    if isinstance(col, str) and col.startswith(t + "."):
+                        col = col[len(t) + 1:]
+                        break
+                if isinstance(col, str) and "(" not in col and "CASE" not in col:
+                    cleaned.append(col if not isinstance(c, dict) else {**c, "column": col})
+            intent[key] = cleaned if (isinstance(items[0], str) if items else True) else items
+
     for agg in intent.get("aggregations", []):
         col = agg.get("column", "")
         for t in tables:
-            prefix = t + "."
-            if col.startswith(prefix):
-                agg["column"] = col[len(prefix):]
+            if col.startswith(t + "."):
+                col = col[len(t) + 1:]
                 break
+        if col == "*" and agg.get("type") != "COUNT":
+            agg["type"] = "COUNT"
+        if any(kw in col for kw in ["(", "CASE"]):
+            col = ""
+        agg["column"] = col
+
+    new_filters = []
+    for f in intent.get("filters", []):
+        v = f.get("value", "")
+        # 修复：子查询占位符（LLM 可能错误地生成 subquery 文本）
+        if isinstance(v, str) and ("subquery" in v.lower() or "SELECT" in v.upper()):
+            continue  # 跳过子查询过滤，改成不加这个过滤条件
+        if f.get("op", "").upper() == "BETWEEN" and isinstance(v, str) and "," in v:
+            vs = [x.strip() for x in v.split(",")]
+            if len(vs) == 2:
+                new_filters.append({"column": f["column"], "op": ">=", "value": vs[0]})
+                new_filters.append({"column": f["column"], "op": "<=", "value": vs[1]})
+                continue
+        new_filters.append(f)
+    intent["filters"] = new_filters
+
+    # 意图级安全检查：检测薪资相关查询
+    _salary_keywords = ["薪资", "工资", "薪酬", "工资表", "salary", "薪资表", "薪水"]
+    contains_salary_q = any(kw in question for kw in _salary_keywords)
+    
+    # 如果问题提到薪资，检查用户权限
+    if contains_salary_q:
+        main_table = intent.get("main_table", "")
+        ts = _COLUMN_SENSITIVITY.get(agent.business_tag, {}).get(main_table, {})
+        has_salary_col = "salary" in ts
+        if has_salary_col:
+            role = user_info.get("role", "employee") if user_info else "employee"
+            max_level = _ROLE_SENSITIVITY_ACCESS.get(role, {"safe"})
+            if "highly_sensitive" not in max_level:
+                # 无论模型是否选择了 salary 列，只要问题涉及薪资且角色无权限，直接拒绝
+                raise Exception(f"当前角色({role})无权查询薪资数据")
+
     return intent
 
 
-# ============================================================
-# 3. 权限校验引擎
-# ============================================================
 class PermissionEngine:
-    """查询意图级别的权限校验"""
-
     def __init__(self, user_info: dict, business_tag: str):
         self.role = user_info.get("role", "employee")
-        self.data_scope = user_info.get("data_scope", "team")
-        self.dept_id = user_info.get("dept_id")
-        self.employee_id = user_info.get("employee_id")
-        self.business_tag = business_tag
-        self.sensitivity = _COLUMN_SENSITIVITY.get(business_tag, {})
         self.max_level = _ROLE_SENSITIVITY_ACCESS.get(self.role, {"safe"})
+        self.sens = _COLUMN_SENSITIVITY.get(business_tag, {})
 
-    def validate_intent(self, intent: dict) -> tuple[bool, str]:
-        """校验查询意图是否越权
-        Returns: (is_allowed: bool, reason: str)
-        """
-        main_table = intent.get("main_table", "")
-
-        # 规则1: 检查查询的表是否存在且允许访问
-        table_sens = self.sensitivity.get(main_table, {})
-        if not table_sens and main_table:
-            return (False, "无权访问表 '" + main_table + "'")
-
-        # 规则2: 检查 SELECT 的列是否越权
-        for col in intent.get("select_columns", []):
-            col_level = table_sens.get(col, "safe")
-            if col_level not in self.max_level:
-                return (False, "无权查询列 '" + col + "'（级别: " + col_level + "，你的权限: " + str(self.max_level) + "）")
-
-        # 规则3: 检查聚合中的列是否越权
-        for agg in intent.get("aggregations", []):
-            col = agg.get("column", "")
-            if col:
-                col_level = table_sens.get(col, "safe")
-                if col_level not in self.max_level:
-                    return (False, "无权对列 '" + col + "' 做聚合计算")
-
-            # 规则3.1: employee 不能做 AVG/SUM 聚合
-            if self.role == "employee" and agg.get("type") in ("SUM", "AVG"):
-                return (False, "员工角色不能执行 SUM/AVG 聚合操作")
-
-        # 规则4: 检查过滤条件是否合理
-        for f in intent.get("filters", []):
-            col = f.get("column", "")
-            col_level = table_sens.get(col, "safe")
-            if col_level not in self.max_level:
-                return (False, "过滤条件中使用了无权查看的列 '" + col + "'")
-
-            # 规则4.1: 不能用敏感列做过滤
-            if col_level == "highly_sensitive" and self.role not in ("admin", "hr_director"):
-                return (False, "无权用敏感字段 '" + col + "' 作为筛选条件")
-
-        # 规则5: 检查 ORDER BY 中的列
-        for ob in intent.get("order_by", []):
-            col = ob.get("column", "")
-            col_level = table_sens.get(col, "safe")
-            if col_level not in self.max_level:
-                return (False, "无权按列 '" + col + "' 排序")
-
-        # 规则6: 检查 JOIN 表是否允许
-        for join_table in intent.get("join_tables", []):
-            join_sens = self.sensitivity.get(join_table, {})
-            if not join_sens:
-                return (False, "无权关联表 '" + join_table + "'")
-
+    def validate_intent(self, intent: dict) -> tuple:
+        """默认软拒绝: 自动过滤不可见列，只有当所有列都被过滤时才硬拒绝"""
+        ts = self.sens.get(intent.get("main_table", ""), {})
+        if not ts:
+            return (True, "")
+        intent["select_columns"] = [c for c in intent.get("select_columns", [])
+                                     if ts.get(c, "safe") in self.max_level]
+        intent["aggregations"] = [a for a in intent.get("aggregations", [])
+                                    if not a.get("column") or ts.get(a["column"], "safe") in self.max_level]
+        intent["filters"] = [f for f in intent.get("filters", [])
+                               if ts.get(f["column"], "safe") in self.max_level]
+        if not intent["select_columns"] and not intent["aggregations"]:
+            return (False, "当前角色无权查看任何列")
+        if self.role == "employee":
+            for a in intent.get("aggregations", []):
+                if a.get("type") in ("SUM", "AVG"):
+                    return (False, "员工角色不能做全公司聚合")
         return (True, "")
 
-
-# ============================================================
-# 4. SQL 生成器（受控模板，LLM 不直接操控 SQL）
-# ============================================================
-
-
-# V3: Known foreign key mapping (main_table, join_table) -> (main_fk_col, join_pk_col)
-FOREIGN_KEYS_MAP = {
+FK = {
     ("employees", "departments"): ("dept_id", "id"),
     ("attendance", "employees"): ("employee_id", "id"),
     ("deals", "customers"): ("customer_id", "id"),
@@ -318,270 +269,165 @@ FOREIGN_KEYS_MAP = {
     ("projects", "departments"): ("dept_id", "id"),
     ("purchase_orders", "departments"): ("dept_id", "id"),
     ("resources", "projects"): ("project_id", "id"),
+    ("follow_ups", "customers"): ("customer_id", "id"),
+    ("sales_targets", "departments"): ("dept_id", "id"),
+    ("expenses", "departments"): ("dept_id", "id"),
+    ("budgets", "departments"): ("dept_id", "id"),
+    ("inventory", "departments"): ("dept_id", "id"),
+    ("cost_centers", "departments"): ("dept_id", "id"),
 }
 
+
 class SQLBuilder:
-    """根据校验通过的查询意图、用户权限生成安全的 SQL（模板化，杜绝注入）
-
-    V3: 表感知的 SQL 构建
-    - 多表 JOIN 时列名前加表名，消除歧义
-    - JOIN 条件使用 FOREIGN_KEYS_MAP，不猜列名
-    - 不内联 RLS（统一由 QueryInterceptor 注入）
-    """
-
     def __init__(self, user_info: dict, business_tag: str):
-        self.user_info = user_info
-        self.business_tag = business_tag
-        self.sensitivity = _COLUMN_SENSITIVITY.get(business_tag, {})
-        self.max_level = _ROLE_SENSITIVITY_ACCESS.get(user_info.get("role", "employee"), {"safe"})
+        self.tag = business_tag
+        self.sens = _COLUMN_SENSITIVITY.get(business_tag, {})
+        self.ml = _ROLE_SENSITIVITY_ACCESS.get(user_info.get("role", "employee"), {"safe"})
+
+    def _find_table(self, col: str, mt: str, joins: list[str]) -> str:
+        """查找列所属的表（用于 JOIN 时加表名前缀消除歧义）"""
+        for t in [mt] + joins:
+            ts = self.sens.get(t, {})
+            if col in ts:
+                return t
+        return mt
 
     def build(self, intent: dict) -> str:
-        """将校验通过的意图翻译为安全 SQL"""
-        main_table = intent.get("main_table", "")
-        select_cols = self._build_select(intent)
-        joins = self._build_joins(intent)
-        where_clause = self._build_where(intent)
-        group_by = self._build_group_by(intent)
-        order_by = self._build_order_by(intent)
-        limit = self._build_limit(intent)
+        mt = intent.get("main_table", "")
+        joins = intent.get("join_tables", [])
+        has_joins = bool(joins)
+        gb = intent.get("group_by", [])
 
-        sql = "SELECT " + select_cols
-        # V3.4: 当有 GROUP BY 但没有聚合时，自动添加 COUNT(*) 作为默认聚合
-        has_agg = len(intent.get("aggregations", [])) > 0
-        if group_by and not has_agg:
-            if select_cols.strip():
-                sql = "SELECT " + select_cols + ", COUNT(*) AS \"count\""
+        # SELECT
+        parts = []
+        ts = self.sens.get(mt, {})
+
+        def add_col(col):
+            t = self._find_table(col, mt, joins)
+            parts.append(('"' + t + '"."' if has_joins else '"') + col + '"')
+
+        for c in intent.get("select_columns", []):
+            if c in ts:
+                add_col(c)
+
+        for c in gb:
+            if c in intent.get("select_columns", []):
+                continue
+            if c in ts:
+                add_col(c)
+
+        for a in intent.get("aggregations", []):
+            col, typ, alias = a.get("column", ""), a.get("type", "COUNT"), a.get("alias", "")
+            if not alias:
+                alias = typ + ("_" + col if col else "")
+            if not col:
+                parts.append('COUNT(*) AS "' + alias + '"')
             else:
-                sql = "SELECT COUNT(*) AS \"count\""
-        else:
-            sql = "SELECT " + select_cols
-        sql += " FROM \"" + main_table + "\""
-        if joins:
-            sql += " " + joins
-        if where_clause:
-            sql += " WHERE " + where_clause
-        if group_by:
-            sql += " GROUP BY " + group_by
-        if order_by:
-            sql += " ORDER BY " + order_by
-        if limit:
-            sql += " LIMIT " + str(limit)
+                lev = ts.get(col, "safe")
+                if lev not in self.ml:
+                    parts.append('0 AS "' + alias + '"')
+                else:
+                    # 安全检查：确认列在表中存在
+                    t = self._find_table(col, mt, joins)
+                    _all_cols = set()
+                    for _t in [mt] + joins:
+                        _ts = self.sens.get(_t, {})
+                        _all_cols.update(_ts.keys())
+                    if col not in _all_cols:
+                        # 列不存在，回退为 COUNT(*)
+                        parts.append('COUNT(*) AS "' + alias + '"')
+                    else:
+                        parts.append(typ + '("' + t + '"."' + col + '") AS "' + alias + '"')
+
+        sql = "SELECT " + (", ".join(parts) if parts else "*") + ' FROM "' + mt + '"'
+
+        # JOIN
+        for jt in joins:
+            k = (mt, jt)
+            if k in FK:
+                fk, pk = FK[k]
+                sql += ' LEFT JOIN "' + jt + '" ON "' + jt + '"."' + pk + '" = "' + mt + '"."' + fk + '"'
+
+        # WHERE — 精确查找列所属的表
+        conds = []
+        for f in intent.get("filters", []):
+            col, op, val = f["column"], f["op"], str(f["value"])
+            t = self._find_table(col, mt, joins)
+            pref = ('"' + t + '".' if has_joins else "") + '"' + col + '"'
+            conds.append(pref + " " + op + " '" + val.replace("'", "''") + "'")
+        if conds:
+            sql += " WHERE " + " AND ".join(conds)
+
+        if gb:
+            sql += " GROUP BY " + ", ".join('"' + self._find_table(c, mt, joins) + '"."' + c + '"' for c in gb)
+        obs = intent.get("order_by", [])
+        if obs:
+            sql += " ORDER BY " + ", ".join('"' + o["column"] + '" ' + o.get("direction", "ASC") for o in obs)
+        lmt = intent.get("limit")
+        sql += " LIMIT " + str(1000 if lmt is None else min(int(lmt), 5000))
         return sql
 
-    def _build_select(self, intent: dict) -> str:
-        """构建 SELECT 子句（多表 JOIN 时列名加表名前缀）"""
-        parts = []
-        main_table = intent.get("main_table", "")
-        table_sens = self.sensitivity.get(main_table, {})
-        has_joins = len(intent.get("join_tables", [])) > 0
-        group_by_cols = intent.get("group_by", [])
-        select_cols = intent.get("select_columns", [])
-        join_tables = intent.get("join_tables", [])
 
-        agg_cols = [a.get("column", "") for a in intent.get("aggregations", []) if a.get("column")]
-        # 当有 GROUP BY 时，SELECT 中的非聚合非GROUP列会被SQLite随机取值
-        # 这类列只在 JOIN 查询中出现（如 departments.name），保留它们
-        valid_cols = select_cols
-        if group_by_cols and not has_joins:
-            valid_cols = [c for c in select_cols if c in group_by_cols or c in agg_cols]
-
-        for col in valid_cols:
-            if has_joins:
-                # 优先在 join_tables 中查找列（用于显示如 departments.name）
-                col_found = False
-                for jt in join_tables:
-                    jt_sens = self.sensitivity.get(jt, {})
-                    if col in jt_sens and jt_sens.get(col, "safe") in self.max_level:
-                        parts.append("\"" + jt + "\".\"" + col + "\"")
-                        col_found = True
-                        break
-                if not col_found:
-                    if table_sens.get(col, "safe") not in self.max_level:
-                        continue
-                    parts.append("\"" + main_table + "\".\"" + col + "\"")
-            else:
-                if table_sens.get(col, "safe") not in self.max_level:
-                    continue
-                parts.append("\"" + col + "\"")
-
-        for gb_col in group_by_cols:
-            if gb_col in valid_cols:
-                continue
-            col_added = False
-            for jt in join_tables:
-                jt_sens = self.sensitivity.get(jt, {})
-                if gb_col in jt_sens:
-                    if jt_sens.get(gb_col, "safe") not in self.max_level:
-                        continue
-                    parts.append("\"" + jt + "\".\"" + gb_col + "\"")
-                    col_added = True
-                    break
-            if not col_added and gb_col in table_sens:
-                if table_sens.get(gb_col, "safe") not in self.max_level:
-                    continue
-                if has_joins:
-                    parts.append("\"" + main_table + "\".\"" + gb_col + "\"")
-                else:
-                    parts.append("\"" + gb_col + "\"")
-
-        for agg in intent.get("aggregations", []):
-            agg_col = agg.get("column", "")
-            agg_type = agg.get("type", "COUNT")
-            alias = agg.get("alias", agg_type + "_" + agg_col) if agg_col else agg_type
-            if agg_col:
-                col_level = table_sens.get(agg_col, "safe")
-                if col_level not in self.max_level:
-                    parts.append("0 AS \"" + alias + "\"")
-                else:
-                    if has_joins:
-                        parts.append(agg_type + "(\"" + main_table + "\".\"" + agg_col + "\") AS \"" + alias + "\"")
-                    else:
-                        parts.append(agg_type + "(\"" + agg_col + "\") AS \"" + alias + "\"")
-            else:
-                if agg_type == "SUM":
-                    parts.append("COUNT(*) AS \"" + alias + "\"")
-                else:
-                    parts.append(agg_type + "(*) AS \"" + alias + "\"")
-
-        if not parts:
-            parts.append("*")
-        return ", ".join(parts)
-
-    def _build_joins(self, intent: dict) -> str:
-        """构建 JOIN 子句（只使用 FOREIGN_KEYS_MAP，不猜列名）"""
-        main_table = intent.get("main_table", "")
-        joins = []
-        for jt in intent.get("join_tables", []):
-            key = (main_table, jt)
-            if key in FOREIGN_KEYS_MAP:
-                fk_col, pk_col = FOREIGN_KEYS_MAP[key]
-                joins.append("LEFT JOIN \"" + jt + "\" ON \"" + jt + "\".\"" + pk_col + "\" = \"" + main_table + "\".\"" + fk_col + "\"")
-            # V3: 找不到外键映射时直接跳过 JOIN（避免生成错误的 column_name）
-        return " ".join(joins)
-
-    def _build_where(self, intent: dict) -> str:
-        """构建 WHERE 子句（只处理用户过滤条件，不注入 RLS）"""
-        user_conds = []
-        for f in intent.get("filters", []):
-            col = f.get("column", "")
-            op = f.get("op", "=")
-            val = f.get("value", "")
-            if isinstance(val, str):
-                user_conds.append("\"" + col + "\" " + op + " '" + str(val) + "'")
-            elif isinstance(val, list):
-                if op.upper() == "BETWEEN":
-                    user_conds.append("\"" + col + "\" BETWEEN '" + str(val[0]) + "' AND '" + str(val[1]) + "'")
-                else:
-                    vs = ", ".join("'" + str(v) + "'" for v in val)
-                    user_conds.append("\"" + col + "\" " + op + " (" + vs + ")")
-            else:
-                user_conds.append("\"" + col + "\" " + op + " " + str(val))
-        return " AND ".join(user_conds) if user_conds else ""
-
-    def _build_group_by(self, intent: dict) -> str:
-        cols = intent.get("group_by", [])
-        if not cols:
-            return ""
-        join_tables = intent.get("join_tables", [])
-        main_table = intent.get("main_table", "")
-        qualified = []
-        for c in cols:
-            found = False
-            for jt in join_tables:
-                sens = self.sensitivity.get(jt, {})
-                if c in sens:
-                    qualified.append('"' + jt + '"."' + c + '"')
-                    found = True
-                    break
-            if not found:
-                qualified.append('"' + main_table + '"."' + c + '"')
-        return ", ".join(qualified)
-
-    def _build_order_by(self, intent: dict) -> str:
-        obs = intent.get("order_by", [])
-        return ", ".join('\"' + ob.get("column", "") + '\" ' + ob.get("direction", "ASC") for ob in obs) if obs else ""
-
-    def _build_limit(self, intent: dict) -> int | None:
-        limit = intent.get("limit")
-        if limit is None:
-            return 1000
-        return min(int(limit), 5000)
-def mask_sensitive_data(df: pd.DataFrame, intent: dict, user_info: dict, business_tag: str) -> pd.DataFrame:
-    """对查询结果中的敏感字段进行脱敏"""
-    role = user_info.get("role", "employee")
-    max_level = _ROLE_SENSITIVITY_ACCESS.get(role, {"safe"})
-    sensitivity = _COLUMN_SENSITIVITY.get(business_tag, {})
-    main_table = intent.get("main_table", "")
-    table_sens = sensitivity.get(main_table, {})
-
-    if "highly_sensitive" in max_level:
-        return df  # 高权限角色不需要脱敏
-
-    df_masked = df.copy()
-    for col in df_masked.columns:
-        col_level = table_sens.get(col, "safe")
-        if col_level == "highly_sensitive":
-            # 薪资等高度敏感字段：替换为 ***
-            df_masked[col] = "***"
-        elif col_level == "sensitive" and "sensitive" not in max_level:
-            # 电话/邮箱等敏感字段：脱敏显示
-            if col == "phone":
-                df_masked[col] = df_masked[col].astype(str).apply(lambda x: x[:3] + "****" + x[-4:] if len(str(x)) > 7 else "***")
-            elif col == "email":
-                df_masked[col] = df_masked[col].astype(str).apply(lambda x: x.split("@")[0][:2] + "***@" + x.split("@")[1] if "@" in str(x) else "***")
-            else:
-                df_masked[col] = "***"
-
-    return df_masked
-
-
-# ============================================================
-# 6. 统一入口
-# ============================================================
-async def safe_query(question: str, agent, user_info: dict) -> dict:
-    """安全查询的统一入口（替代 generate_sql）
-
-    流程：自然语言 → 结构化意图 → 权限校验 → 受控SQL生成 → 执行 → 脱敏
-    """
-    business_tag = agent.business_tag
-
+async def mcp_safe_query(question, agent, user_info):
+    """MCP ?????"""
+    from app.mcp_client import get_mcp_client
     try:
-        # Step 1: LLM 解析为结构化意图
-        intent = await parse_query_intent(question, agent)
+        intent = await parse_query_intent(question, agent, user_info)
+    except Exception as e:
+        return {"status":"error","error":"\u610f\u56fe\u89e3\u6790\u5931\u8d25:"+str(e),"rejected":True}
+    ok, reason = PermissionEngine(user_info, agent.business_tag).validate_intent(intent)
+    if not ok:
+        return {"status":"error","error":"\u6743\u9650\u62d2\u7edd:"+reason,"rejected":True}
+    client = get_mcp_client()
+    client.set_auth(user_role=user_info.get("role","employee"),data_scope=user_info.get("data_scope","self_only"),employee_id=user_info.get("employee_id"),dept_id=user_info.get("dept_id"))
+    params={
+        "main_table":intent.get("main_table",""),
+        "select_columns":intent.get("select_columns",[]),
+        "aggregations":intent.get("aggregations",[]),
+        "filters":intent.get("filters",[]),
+        "join_tables":intent.get("join_tables",[]),
+        "group_by":intent.get("group_by",[]),
+        "order_by":intent.get("order_by",[]),
+        "limit":intent.get("limit",100),
+    }
+    result = await client.query(agent.business_tag, params)
+    if not result.get("success"):
+        return {"status":"error","error":"MCP\u67e5\u8be2\u5931\u8d25:"+result.get("error",""),"rejected":True}
+    import pandas as pd
+    df = pd.DataFrame(result["data"].get("rows",[])) if result["data"].get("rows") else pd.DataFrame()
+    return {"status":"success","sql":result["data"].get("sql",""),"intent":intent,"data":df,"rejected":False}
+
+
+def mask_sensitive_data(df, intent, user_info, business_tag):
+    role = user_info.get("role", "employee")
+    ml = _ROLE_SENSITIVITY_ACCESS.get(role, {"safe"})
+    if "highly_sensitive" in ml:
+        return df
+    sens = _COLUMN_SENSITIVITY.get(business_tag, {}).get(intent.get("main_table", ""), {})
+    dm = df.copy()
+    for c in dm.columns:
+        lv = sens.get(c, "safe")
+        if lv == "highly_sensitive":
+            dm[c] = "***"
+        elif lv == "sensitive" and "sensitive" not in ml:
+            dm[c] = "***"
+    return dm
+
+
+async def safe_query(question, agent, user_info):
+    try:
+        intent = await parse_query_intent(question, agent, user_info)
     except Exception as e:
         return {"status": "error", "error": "意图解析失败: " + str(e), "rejected": True}
-
-    # Step 2: 权限校验
-    engine = PermissionEngine(user_info, business_tag)
-    allowed, reason = engine.validate_intent(intent)
-    if not allowed:
+    ok, reason = PermissionEngine(user_info, agent.business_tag).validate_intent(intent)
+    if not ok:
         return {"status": "error", "error": "权限拒绝: " + reason, "rejected": True}
-
-    # Step 3: 安全 SQL 生成
     try:
-        builder = SQLBuilder(user_info, business_tag)
-        sql = builder.build(intent)
+        sql = SQLBuilder(user_info, agent.business_tag).build(intent)
     except Exception as e:
         return {"status": "error", "error": "SQL 生成失败: " + str(e), "rejected": True}
-
-    # Step 4: 执行 SQL
     try:
-        sql = normalize_sql_values(sql)
         df = agent.execute_sql(sql)
     except Exception as e:
         return {"status": "error", "error": "SQL 执行失败: " + str(e), "rejected": True}
-
-    # Step 5: 结果脱敏
-    df_masked = mask_sensitive_data(df, intent, user_info, business_tag)
-
-    return {
-        "status": "success",
-        "sql": sql,
-        "intent": intent,
-        "data": df_masked,
-        "rejected": False,
-    }
-
-
-
-
+    return {"status": "success", "sql": sql, "intent": intent, "data": mask_sensitive_data(df, intent, user_info, agent.business_tag), "rejected": False}

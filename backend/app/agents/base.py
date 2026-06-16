@@ -1,8 +1,9 @@
-"""Agent 基类 — 标准工具接口，与 MCP 范式对齐"""
+﻿"""Agent 基类 — 标准工具接口，与 MCP 范式对齐"""
 
 from dataclasses import dataclass, field
-
 import asyncio
+import re
+
 import pandas as pd
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
@@ -41,10 +42,9 @@ class DataSourceAgent:
         self.business_tag = business_tag
         self._engine: Engine | None = None
         self.schema_cache: dict | None = None
-        self._rls_scope: dict | None = None  # V2: 行级安全范围
+        self._rls_scope: dict | None = None
 
     def set_rls_scope(self, scope: dict | None):
-        """V2: 设置行级安全范围，由 API 层在权限校验后注入"""
         self._rls_scope = scope
 
     @property
@@ -55,12 +55,10 @@ class DataSourceAgent:
         return self._engine
 
     def list_tables(self) -> list[str]:
-        """工具: 列出所有表名"""
         inspector = inspect(self.engine)
         return inspector.get_table_names()
 
     def describe_table(self, table_name: str) -> TableSchema:
-        """工具: 获取单表的列级详情"""
         inspector = inspect(self.engine)
         cols = inspector.get_columns(table_name)
         pk_cols = inspector.get_pk_constraint(table_name).get("constrained_columns", [])
@@ -74,33 +72,41 @@ class DataSourceAgent:
         ]
         return TableSchema(name=table_name, columns=columns)
 
-    def execute_sql(self, query: str, params: dict | None = None) -> pd.DataFrame:
-        """工具: 执行只读 SQL 查询 (V2: 集成 RLS)
+    def _extract_table_name(self, query: str) -> str | None:
+        """从 SQL 中提取 FROM 子句的主表名"""
+        m = re.search(r'FROM\s+"?(\w+)"?', query, re.IGNORECASE)
+        return m.group(1) if m else None
 
-        Args:
-            query: SQL 语句（仅允许 SELECT）
-            params: 可选参数字典，用于参数化查询
-        """
+    def execute_sql(self, query: str, params: dict | None = None) -> pd.DataFrame:
+        """工具: 执行只读 SQL 查询 (V3: 注入 RLS 前进行列存在性检查)"""
         stripped = query.strip().upper()
         if not stripped.startswith("SELECT"):
             raise ValueError("仅允许 SELECT 查询")
 
-        # V2: 权限过滤注入
         if self._rls_scope and self._rls_scope.get("mode") == "filtered":
             from app.core.query_rewriter import QueryInterceptor
             interceptor = QueryInterceptor(self._rls_scope)
-            query = interceptor.rewrite_sql(query)
+
+            # 自动检测主表并设置列缓存
+            main_table = self._extract_table_name(query)
+            if main_table:
+                try:
+                    schema = self.describe_table(main_table)
+                    col_names = [c.name for c in schema.columns]
+                    interceptor.set_table_columns(main_table, col_names)
+                except Exception:
+                    pass
+
+            query = interceptor.rewrite_sql(query, table_name=main_table)
 
         with self.engine.connect() as conn:
             return pd.read_sql(text(query), conn, params=params or {})
 
     async def execute_sql_async(self, query: str, params: dict | None = None) -> pd.DataFrame:
-        """异步包装 — 在 async 路由中调用以避免阻塞事件循环"""
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self.execute_sql, query, params)
 
     def probe_raw_schema(self) -> SchemaSummary:
-        """完整探测所有表结构（不含语义推断）"""
         table_names = self.list_tables()
         tables = []
         for t in table_names:
