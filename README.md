@@ -1,7 +1,8 @@
-﻿# DataMind
+# DataMind
 
 DataMind 是一个面向企业白领的 **AI 数据自助分析平台**。一次 HR 系统同步后，业务人员即可用自然语言查询和分析自己权限内的业务数据，无需学习 SQL。
 ![UI_1.png](UI_1.png)
+
 ---
 
 ## 它能做什么
@@ -16,9 +17,9 @@ DataMind 是一个面向企业白领的 **AI 数据自助分析平台**。一次
 
 **权限控制**
 
-- "我的薪资情况" → 员工可查看自己薪资
-- "其他人的薪资" → 被权限系统拦截，提示权限不足
-- "各部门人力分布" → 部门负责人只看到自己团队的数据
+- "我的薪资情况" → 员工可查看自己薪资（脱敏显示）
+- "我部门人效趋势" → 部门负责人只看到自己团队的数据
+- "其他人的薪资" → 被权限系统拦截
 
 **智能报告**
 
@@ -32,16 +33,18 @@ DataMind 是一个面向企业白领的 **AI 数据自助分析平台**。一次
 用户 → HTTP POST /api/query/ask + JWT Token
                 │
         ┌───────┴────────┐
-        │   API 层        │  鉴权 → 意图解析 → 调用查询引擎
+        │  API 层         │  鉴权 → check_datasource_access
         └───────┬────────┘
                 │
         ┌───────┴────────┐
-        │  MCP 查询引擎    │  权限校验 → 注入用户上下文
+        │ Orchestrator    │  LangGraph StateGraph 编排
+        │ (统一入口)       │  intent_node → sql_node → analysis_node → report_node
         └───────┬────────┘
                 │
         ┌───────┴────────┐
         │  MCP Server 层  │  HR / CRM / 费控 / ERP 业务工具
         │  + MCPAuth 权限  │  列级可见性 + 行级 RLS + 数据脱敏
+        │  (contextvar)    │  请求级权限上下文，无并发竞态
         └───────┬────────┘
                 │
         ┌───────┴────────┐
@@ -49,7 +52,9 @@ DataMind 是一个面向企业白领的 **AI 数据自助分析平台**。一次
         └────────────────┘
 ```
 
-核心设计：每个业务系统封装为独立的 MCP Server，暴露结构化业务工具（如 `get_department_budget`、`get_employee_detail`）。AI Agent 通过 function calling 选择合适的工具，权限在工具内部自动执行。
+核心设计：**单一发布入口**（`POST /api/query/ask`）委托 LangGraph OrchestratorAgent，内部经过意图识别 → SQL/Tools → 分析 → 报告 四个节点。
+
+每个业务系统封装为独立的 MCP Server，暴露结构化业务工具（如 `get_department_budget`、`get_employee_detail`）。权限上下文通过 **contextvar** 在每个请求任务内隔离传递，修复了全局单例的并发竞态问题。
 
 ---
 
@@ -71,13 +76,13 @@ python -m venv .venv
 
 # 配置环境变量
 copy .env.example .env
-# 编辑 .env，填入 DEEPSEEK_API_KEY
+# 编辑 .env，填入 DEEPSEEK_API_KEY（DeepSeek 平台获取）
 
-# 启动
+# 启动（首次自动初始化种子数据）
 .venv\Scripts\uvicorn app.main:app --host 127.0.0.1 --port 8000 --log-level info
 ```
 
-首次启动会自动创建 SQLite 数据库、生成 4 个 demo 业务库、同步用户数据。
+首次启动会自动创建 SQLite 数据库、生成 4 个 demo 业务库、同步 189 个用户数据。
 
 ### 前端
 
@@ -104,36 +109,44 @@ npm run dev
 DataMind/
 ├── backend/                    # Python 后端
 │   ├── app/
-│   │   ├── api/                # API 路由（auth、query、agent）
+│   │   ├── api/                # API 路由（auth、query、agent、dashboard）
+│   │   │   └── query.py        # 统一查询入口（委托 OrchestratorAgent）
 │   │   ├── core/               # 核心引擎
-│   │   │   ├── query_engine.py # MCP 查询引擎
-│   │   │   ├── reporter.py     # LLM 报告生成
-│   │   │   ├── auth.py         # JWT 鉴权
+│   │   │   ├── auth.py         # JWT 鉴权 + 密钥强度校验
+│   │   │   ├── auth_context.py # contextvar 权限上下文（P0 修复）
+│   │   │   ├── query_engine.py # 敏感度映射常量（供 MCPAuth 使用）
 │   │   │   ├── llm_client.py   # DeepSeek API 客户端
 │   │   │   ├── permissions.py  # 数据源权限检查
-│   │   │   └── hr_sync.py      # HR 同步引擎
+│   │   │   ├── hr_sync.py      # HR 同步引擎
+│   │   │   ├── encryption.py   # AES 加密
+│   │   │   └── sandbox.py      # 代码沙箱
 │   │   ├── mcp_servers/        # MCP Server 实现
-│   │   │   ├── base_sql.py     # 基类 + MCPAuth 权限
+│   │   │   ├── base_sql.py     # 基类 + MCPAuth 权限 (RLS/脱敏)
 │   │   │   ├── hr_server.py    # HR 系统（17 个工具）
 │   │   │   ├── crm_server.py   # CRM 系统（14 个工具）
 │   │   │   ├── finance_server.py # 费控系统（13 个工具）
 │   │   │   ├── erp_server.py   # ERP 系统（16 个工具）
-│   │   │   └── registry.py     # 注册表
-│   │   ├── mcp_client.py       # MCP 客户端
-│   │   ├── orchestrator/       # LangGraph Agent 编排
-│   │   │   ├── nodes/          # 意图 / SQL / 分析 / 报告节点
-│   │   │   └── graph/          # StateGraph 构建
-│   │   ├── models/             # SQLAlchemy ORM
+│   │   │   └── registry.py     # 注册表 + HTTP 路由（已加鉴权）
+│   │   ├── mcp_client.py       # MCP 客户端（contextvar 传递权限）
+│   │   ├── orchestrator/       # LangGraph Agent 编排（统一入口）
+│   │   │   ├── nodes/          # intent / sql / analysis / report 节点
+│   │   │   ├── graph/          # StateGraph 构建
+│   │   │   └── errors.py       # 友好的错误提示
+│   │   ├── agents/             # 旧 Agent 实现（保留兼容）
+│   │   ├── models/             # SQLAlchemy ORM（含全部 13 表）
 │   │   ├── schemas/            # Pydantic 请求响应
 │   │   ├── seed.py             # 种子数据
 │   │   └── main.py             # FastAPI 入口
+│   ├── scripts/                # 开发/调试脚本（gitignored）
+│   ├── tests/                  # pytest 测试
+│   │   ├── test_mcp_auth_rls.py    # MCPAuth 权限回归测试（20 用例）
+│   │   ├── test_row_level_security.py
+│   │   ├── test_sql_quality.py
+│   │   ├── agents/
+│   │   └── conftest.py
 │   ├── demo_data/              # SQLite 示例数据库
 │   └── requirements.txt
 ├── frontend/                   # Vue 3 + Vite 前端
-├── tests/                      # 测试文件
-│   ├── _test_agent_multi_role.py  # 39 个多角色测试
-│   ├── _e2e_full.py               # 端到端 API 测试
-│   └── ...
 └── README.md
 ```
 
@@ -141,7 +154,7 @@ DataMind/
 
 ## MCP 工具
 
-4 个 MCP Server 共提供 **60 个业务工具**：
+4 个 MCP Server 共提供 **60 个业务工具**，统一的 `execute_tool` 覆写自动对结果集脱敏：
 
 ### HR 系统（17 个工具）
 
@@ -184,32 +197,47 @@ DataMind/
 
 ## 权限体系
 
+### 安全设计
+
+```
+请求进入 → JWT 鉴权 → 从 User ORM 推导 role/data_scope/employee_id
+              ↓
+       contextvar 注入 MCPAuth（请求级隔离，无竞态）
+              ↓
+       execute_tool 覆写
+          ├─ _check_table_access    表级准入
+          ├─ handler 执行业务逻辑
+          └─ _apply_auth            结果集脱敏
+```
+
+- **鉴权**：JWT（HS256）+ DB 实时 role 校验，拒绝 token 内嵌 role
+- **隔离**：权限上下文通过 Python `contextvars` 传递，并发请求不串扰
+- **覆盖**：核心工具 + 业务工具统一经 `execute_tool` 覆写脱敏，`execute_sql` 后门已补 RLS
+- **fail-closed**：权限计算失败 → 拒绝查询，而非退回到无限制状态
+
 ### 角色
 
-| 角色 | 数据范围 | 可见敏感字段 |
-|------|----------|-------------|
-| `admin` | 全部 | 全部 |
-| `hr_director` | 部门及下属 | 薪资、联系方式 |
-| `finance_director` | 全部 | 财务相关 |
-| `dept_ceo` | 团队 | 薪资（脱敏）、联系方式（脱敏） |
-| `dept_manager` | 团队 | 薪资（脱敏）、联系方式（脱敏） |
-| `sales_manager` | 团队 | 联系方式（脱敏） |
-| `finance_bp` | 部门 | 财务相关 |
-| `employee` | 仅自己 | 自己可见薪资、联系方式（脱敏） |
-| `viewer` | 部门 | 基础信息 |
+| 角色 | 数据范围 | 敏感字段 |
+|------|----------|---------|
+| `admin` | 全部 | 全部可见（原值） |
+| `hr_director` | 部门及下属 | 全部可见（原值） |
+| `finance_director` | 全部 | 财务相关可见 |
+| `dept_ceo` / `dept_manager` | 团队 | 脱敏显示 salary/phone/email |
+| `sales_manager` | 团队 | 联系方式脱敏 |
+| `finance_bp` | 部门 | 财务相关可见 |
+| `employee` | 仅自己 | 自己数据脱敏显示 salary/phone/email |
+| `viewer` | 部门 | 基础信息，salary/phone/email 脱敏 |
 
-### 敏感字段分级
-
-- **highly_sensitive** — 仅 `admin` 可见（当前无字段）
-- **sensitive** — 有权限的角色可见，普通角色脱敏显示（`salary`、`phone`、`email`、`budget`）
-- **safe** — 所有角色可见（`name`、`position`、`dept_id` 等）
+> 所有非 `admin`/`hr_director` 角色访问 `salary`、`phone`、`email` 等敏感字段时，值自动脱敏（如 `138****8000`、`zh***@example.com`、`***`）。列可见性不受影响。
 
 ### 行级安全（RLS）
 
-- **self_only** — 只看到自己（`WHERE employee_id = 当前用户`）
-- **team** — 看到部门内数据（`WHERE dept_id = 当前部门`）
-- **dept** — 看到部门数据（含子部门）
-- **all** — 看到全部数据
+- **self_only** — `WHERE employee_id = 当前用户`
+- **team** — `WHERE dept_id = 当前部门`
+- **dept** — `WHERE dept_id IN (部门及子部门)`
+- **all** — 无行级限制
+
+RLS 条件通过 `apply_rls_filter` 自动注入 SQL，支持已有 `WHERE` 的 AND 追加和无 WHERE 的正确插入（ORDER BY / GROUP BY 之前）。
 
 ---
 
@@ -220,10 +248,11 @@ DataMind/
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/api/auth/login` | POST | 登录获取 JWT Token |
-| `/api/query/ask` | POST | 发起自然语言查询 |
+| `/api/query/ask` | POST | **统一查询入口**（委托 LangGraph Agent） |
 | `/api/query/history` | GET | 查询历史 |
-| `/api/agent/ask` | POST | LangGraph Agent 入口 |
-| `/api/datasources` | GET | 可用数据源 |
+| `/api/agent/ask` | POST | Agent 多轮对话入口 |
+| `/api/dashboard/panels` | GET | 仪表盘 KPI 面板 |
+| `/api/datasources` | GET | 可用数据源列表（admin） |
 
 ### 请求示例
 
@@ -242,10 +271,13 @@ curl -X POST http://127.0.0.1:8000/api/query/ask \
 ## 测试
 
 ```bash
-# 多角色测试（直接调用 MCP Server）
 cd backend
-../.venv/Scripts/python ../tests/_test_agent_multi_role.py
 
-# 端到端 API 测试（需要先启动服务）
-../.venv/Scripts/python ../tests/_e2e_full.py
+# 运行全部测试
+.venv\Scripts\python -m pytest tests/ -v
+
+# 运行权限回归测试（推荐改动前后都跑）
+.venv\Scripts\python -m pytest tests/test_mcp_auth_rls.py -v
 ```
+
+测试覆盖：MCPAuth 权限矩阵（20 用例）、行级安全（20 用例）、Agent 编排、SQL 质量。
