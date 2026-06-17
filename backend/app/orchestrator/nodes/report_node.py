@@ -4,6 +4,7 @@
 并生成有业务价值的追问建议。
 """
 
+import dataclasses
 import logging
 
 from app.core.reporter import assemble_report, df_to_markdown_table
@@ -97,7 +98,7 @@ async def report_node(state: AgentState) -> dict:
     # 构建数据摘要
     df = sql_result.df if sql_result else None
     sql = sql_result.sql if sql_result else ""
-    analysis_data = analysis_result.dict() if analysis_result and analysis_result.status == "success" else None
+    analysis_data = dataclasses.asdict(analysis_result) if analysis_result and analysis_result.status == "success" else None
 
         # 生成报告 - 所有查询都用 LLM 生成智能报告，失败时降级
     try:

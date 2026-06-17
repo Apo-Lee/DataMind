@@ -1,7 +1,8 @@
-﻿_test_*.py
-backend/_test_*.py
-backend/_e2e_*.py
-backend/test_*.ps1
+# 测试文件不应被忽略（阶段2清理：移除前人的 _test_* 忽略规则）
+# _test_*.py
+# backend/_test_*.py
+# backend/_e2e_*.py
+# backend/test_*.ps1
 _response*.md
 _response_*/
 *.sqlite
@@ -11,3 +12,8 @@ __pycache__/
 datamind.db
 frontend/dist/
 frontend/node_modules/
+.venv/
+venv/
+*.bak
+server_*.log
+backend/test_roles.ps1

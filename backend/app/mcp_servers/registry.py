@@ -3,7 +3,10 @@ app/mcp_servers/registry.py — MCP Server 注册表
 管理所有 MCP Server 的生命周期和路由
 """
 import logging
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from app.core.auth import get_current_user
+from app.models.user import User
 
 logger = logging.getLogger(__name__)
 
@@ -42,38 +45,31 @@ def build_mcp_router() -> APIRouter:
     router = APIRouter(prefix="/api/mcp", tags=["MCP Servers"])
 
     @router.get("/servers")
-    async def list_servers():
+    async def list_servers(current_user: User = Depends(get_current_user)):
         return list_all_servers()
 
     @router.get("/{tag}/tools")
-    async def list_tools(tag: str):
+    async def list_tools(tag: str, current_user: User = Depends(get_current_user)):
         server = get_server(tag)
         if not server:
             return {"error": f"Server not found: {tag}"}
         return {"tools": server.list_tools()}
 
     @router.post("/{tag}/execute")
-    async def execute_tool(tag: str, body: dict):
+    async def execute_tool(tag: str, body: dict, current_user: User = Depends(get_current_user)):
         server = get_server(tag)
         if not server:
             return {"success": False, "error": f"Server not found: {tag}"}
         tool_name = body.get("tool", "")
         args = body.get("args", {})
-        # 支持通过 body 传递权限上下文
-        auth_ctx = body.get("auth", {})
-        if auth_ctx:
-            from app.mcp_servers.base_sql import MCPAuth
-            server.set_auth(MCPAuth(
-                user_role=auth_ctx.get("role", "employee"),
-                data_scope=auth_ctx.get("scope", "self_only"),
-                employee_id=auth_ctx.get("employee_id"),
-                dept_id=auth_ctx.get("dept_id"),
-            ))
+        # 鉴权上下文从已认证的 current_user 推导，拒绝 body.auth 自报权限
+        from app.core.auth_context import set_user_auth_from_user
+        set_user_auth_from_user(current_user)
         result = await server.execute_tool(tool_name, args)
         return result.model_dump()
 
     @router.get("/{tag}/health")
-    async def health(tag: str):
+    async def health(tag: str, current_user: User = Depends(get_current_user)):
         server = get_server(tag)
         if not server:
             return {"status": "error", "error": f"Server not found: {tag}"}

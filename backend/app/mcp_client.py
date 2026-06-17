@@ -1,6 +1,6 @@
 ﻿"""
 MCP Client — Agent 通过此客户端调用 MCP Server 的工具
-支持权限上下文注入 (set_auth)
+权限上下文通过 contextvar 传递（auth_context.set_user_auth），修复并发竞态
 """
 import json, logging
 from app.mcp_servers.registry import get_server, init_mcp_servers
@@ -14,17 +14,16 @@ class MCPClient:
     def __init__(self):
         if not get_server("hr"):
             init_mcp_servers()
-        self._auth = None
 
     def set_auth(self, user_role="employee", data_scope="self_only",
                  employee_id=None, dept_id=None):
-        """设置调用者权限上下文, 影响后续所有工具调用"""
-        from app.mcp_servers.base_sql import MCPAuth
-        self._auth = MCPAuth(user_role, data_scope, employee_id, dept_id)
-        for tag in ["hr", "crm", "finance", "erp"]:
-            srv = get_server(tag)
-            if srv:
-                srv.set_auth(self._auth)
+        """设置调用者权限上下文（通过 contextvar，不会污染全局）
+
+        原先的循环 srv.set_auth(...) 灌入单例 server 已被移除。
+        各 server 的 handler 通过 auth_context.get_user_auth() 读取当前任务的权限。
+        """
+        from app.core.auth_context import set_user_auth
+        set_user_auth(user_role, data_scope, employee_id, dept_id)
         return self
 
     def get_tools(self, business_tag):

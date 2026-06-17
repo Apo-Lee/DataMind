@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """app/mcp_servers/base_sql.py - SQL DB MCP Server Base (V3 fix)"""
 
-import json, logging
+import asyncio, json, logging
 from typing import Any
 from sqlalchemy import create_engine, inspect, text
 import pandas as pd
@@ -25,6 +25,7 @@ class MCPAuth:
         v = self.visible_columns(bt, tn)
         return [c for c in cols if c in v] if v else cols
     def mask_sensitive_data(self, bt, rows):
+        # 仅 admin / hr_director（max_level 含 highly_sensitive）看原值，其余角色敏感字段一律脱敏
         if "highly_sensitive" in self.max_level: return rows
         sens = _COLUMN_SENSITIVITY.get(bt, {})
         masked = []
@@ -34,7 +35,10 @@ class MCPAuth:
                 for col, level in tcols.items():
                     if col not in mrow: continue
                     if level == "highly_sensitive": mrow[col] = "***"
-                    elif level == "sensitive" and "sensitive" not in self.max_level:
+                    elif level == "sensitive":
+                        # 修复：原条件 'and "sensitive" not in self.max_level' 导致 employee
+                        # （max_level 含 sensitive）看不到脱敏，salary/phone/email 原值泄露。
+                        # 现统一脱敏所有非 highly_sensitive 角色的 sensitive 字段。
                         v = mrow[col]
                         if col == "phone" and isinstance(v, str) and len(v) > 7:
                             mrow[col] = v[:3] + "****" + v[-4:]
@@ -62,12 +66,19 @@ class MCPAuth:
         elif sc == "dept_and_sub" and self.dept_id is not None:
             wc = Q + cm[0] + Q + " IN (SELECT descendant_id FROM org_hierarchy WHERE ancestor_id = " + str(self.dept_id) + ")"
         if wc:
-            if "WHERE" in sql.upper():
+            up = sql.upper()
+            if "WHERE" in up:
                 sql = sql.replace("WHERE", "WHERE (" + wc + ") AND ", 1)
             else:
-                idx = max(sql.upper().rfind("ORDER BY"), sql.upper().rfind("LIMIT"))
-                if idx < 0: sql += " WHERE " + wc
-                else: sql = sql[:idx] + " WHERE " + wc + " " + sql[idx:]
+                # WHERE 插在 ORDER BY / GROUP BY / LIMIT 等子句之前；取最早出现的那个位置
+                markers = ["ORDER BY", "GROUP BY", "LIMIT"]
+                idxs = [up.rfind(m) for m in markers]
+                idxs = [i for i in idxs if i >= 0]
+                if not idxs:
+                    sql += " WHERE " + wc
+                else:
+                    idx = min(idxs)
+                    sql = sql[:idx] + " WHERE " + wc + " " + sql[idx:]
         return sql
 
 
@@ -79,13 +90,54 @@ class SQLMCPServer(BaseMCPServer):
         self._engine = create_engine(url, connect_args=ca)
         self._register_core_tools()
         self._register_business_tools()
-        self._auth = MCPAuth()
-    def set_auth(self, a): self._auth = a
-    def _apply_auth(self, rows): return self._auth.mask_sensitive_data(self.business_tag, rows)
-    def _apply_column_filter(self, t, cols): return self._auth.filter_columns(self.business_tag, t, cols)
+
+    # ——— 权限上下文改由 contextvar 提供（auth_context.get_user_auth()），
+    #     替代原来的 self._auth 实例属性，修复并发竞态 ———
+    @staticmethod
+    def _get_auth():
+        from app.core.auth_context import get_user_auth
+        return get_user_auth()
+
+    def _apply_auth(self, rows): return self._get_auth().mask_sensitive_data(self.business_tag, rows)
+    def _apply_column_filter(self, t, cols): return self._get_auth().filter_columns(self.business_tag, t, cols)
     def _check_table_access(self, t):
-        if not self._auth.can_access_table(self.business_tag, t): raise Exception("Access denied: " + t)
-    def _apply_rls(self, sql, mt): return self._auth.apply_rls_filter(self.business_tag, mt, sql)
+        if not self._get_auth().can_access_table(self.business_tag, t):
+            raise Exception("Access denied: " + t)
+    def _apply_rls(self, sql, mt): return self._get_auth().apply_rls_filter(self.business_tag, mt, sql)
+
+    # ——— execute_tool 覆写：对业务工具统一套脱敏（P0 修复） ———
+    async def execute_tool(self, tool_name: str, args: dict) -> MCPResult:
+        """覆写 base 的 execute_tool，为业务工具结果集统一套权限脱敏。
+
+        - 核心工具（query/list_tables/describe_table/execute_sql）自身已处理权限
+        - 业务工具（get_* / search_* 等）不经 _apply_auth，在此统一补脱敏
+        """
+        handler = self._tool_handlers.get(tool_name)
+        if not handler:
+            return MCPResult(success=False, error=f"Unknown tool: {tool_name}")
+        try:
+            if asyncio.iscoroutinefunction(handler):
+                data = await handler(args)
+            else:
+                data = handler(args)
+            # 核心工具已自脱敏，跳过免双重处理
+            if tool_name not in ("query", "list_tables", "describe_table", "execute_sql"):
+                data = self._mask_business_result(data)
+            return MCPResult(success=True, data=data)
+        except Exception as e:
+            logger.error("MCP tool %s failed: %s", tool_name, e)
+            return MCPResult(success=False, error=str(e))
+
+    def _mask_business_result(self, data):
+        """递归脱敏业务工具返回结果中的行集（list[dict]）。"""
+        if isinstance(data, dict):
+            return {k: self._mask_business_result(v) for k, v in data.items()}
+        if isinstance(data, list):
+            if data and isinstance(data[0], dict):
+                return self._apply_auth(data)
+            return [self._mask_business_result(item) for item in data]
+        return data
+
     def _register_core_tools(self):
         self.register_tool(MCPTool(name="query",description="Structured query",parameters={"main_table":{"type":"string"},"select_columns":{"type":"array","items":{"type":"string"}},"aggregations":{"type":"array","items":{"type":"object","properties":{"column":{"type":"string"},"type":{"type":"string","enum":["COUNT","SUM","AVG","MAX","MIN"]},"alias":{"type":"string"}}}},"filters":{"type":"array","items":{"type":"object","properties":{"column":{"type":"string"},"op":{"type":"string"},"value":{"type":"string"}}}},"join_tables":{"type":"array","items":{"type":"string"}},"group_by":{"type":"array","items":{"type":"string"}},"order_by":{"type":"array","items":{"type":"object","properties":{"column":{"type":"string"},"direction":{"type":"string"}}}},"limit":{"type":"integer"}},required=["main_table","select_columns"]),self._handle_query)
         self.register_tool(MCPTool(name="list_tables",description="List all tables",parameters={}),self._handle_list_tables)
@@ -153,12 +205,13 @@ class SQLMCPServer(BaseMCPServer):
     async def _handle_list_tables(self, args):
         ins = inspect(self._engine)
         result = []
+        auth = self._get_auth()
         for t in ins.get_table_names():
             try: self._check_table_access(t)
             except: continue
             cols = ins.get_columns(t)
             pk = ins.get_pk_constraint(t).get("constrained_columns",[])
-            visible = self._auth.visible_columns(self.business_tag, t)
+            visible = auth.visible_columns(self.business_tag, t)
             result.append({"name":t,"columns":[{"name":c["name"],"type":str(c["type"]),"is_pk":c["name"] in pk} for c in cols if not visible or c["name"] in visible]})
         return {"tables": result}
     async def _handle_describe_table(self, args):
@@ -169,7 +222,7 @@ class SQLMCPServer(BaseMCPServer):
         cols = ins.get_columns(tn)
         pk = ins.get_pk_constraint(tn).get("constrained_columns",[])
         fk_list = [{"col":f["constrained_columns"][0],"ref_table":f["referred_table"],"ref_col":f["referred_columns"][0]} for f in ins.get_foreign_keys(tn) if f.get("constrained_columns")]
-        visible = self._auth.visible_columns(self.business_tag, tn)
+        visible = self._get_auth().visible_columns(self.business_tag, tn)
         return {"table":tn,"columns":[{"name":c["name"],"type":str(c["type"]),"is_pk":c["name"] in pk} for c in cols if not visible or c["name"] in visible],"foreign_keys":fk_list}
     async def _handle_execute_sql(self, args):
         sql = (args.get("sql","") or "").strip()
@@ -179,6 +232,20 @@ class SQLMCPServer(BaseMCPServer):
         if limit <= 0: limit = 100
         if not sql.upper().startswith("SELECT"): raise Exception("Only SELECT allowed")
         if "LIMIT" not in sql.upper(): sql += " LIMIT %d" % limit
+        # execute_sql 之前必须通过 RLS 和表级访问检查（P0 修复：这条后门原来完全绕过权限）
+        # 注：简单词法方式提取主表名（FROM 之后、空格/别名/子查询之前），非 AST 解析
+        mt = None
+        for kw in ("FROM",):
+            idx = sql.upper().find(kw)
+            if idx >= 0:
+                after = sql[idx + len(kw):].strip().split(",")[0].split()[0]
+                if after:
+                    # 去掉引号和可能的别名
+                    mt = after.strip(Q).split()[0].split(".")[0]
+                break
+        if mt:
+            self._check_table_access(mt)
+            sql = self._apply_rls(sql, mt)
         try:
             df = pd.read_sql(text(sql), self._engine)
             rows = df.head(1000).to_dict(orient="records")

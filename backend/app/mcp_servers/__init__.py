@@ -2,7 +2,7 @@
 app/mcp_servers/__init__.py — DataMind MCP Server 注册表
 """
 
-import json, logging
+import asyncio, json, logging
 from typing import Any
 from pydantic import BaseModel, Field
 
@@ -80,23 +80,30 @@ class BaseMCPServer:
 
     # ——— FastAPI 路由方法 ———
     def get_routes(self):
-        """返回 {path: (method, handler)} 字典"""
-        from fastapi import APIRouter
-        router = APIRouter(prefix=f"/mcp/{self.business_tag}", tags=[f"MCP-{self.name}"])
+        """返回 APIRouter（所有路由已加鉴权）"""
+        from fastapi import APIRouter, Depends
+        from app.core.auth import get_current_user
+        from app.models.user import User
+        router = APIRouter(
+            prefix=f"/mcp/{self.business_tag}",
+            tags=[f"MCP-{self.name}"],
+        )
 
         @router.get("/tools")
-        async def list_mcp_tools():
+        async def list_mcp_tools(current_user: User = Depends(get_current_user)):
             return {"tools": self.list_tools()}
 
         @router.post("/execute")
-        async def execute_mcp_tool(body: dict):
+        async def execute_mcp_tool(body: dict, current_user: User = Depends(get_current_user)):
+            from app.core.auth_context import set_user_auth_from_user
+            set_user_auth_from_user(current_user)
             tool_name = body.get("tool", "")
             args = body.get("args", {})
             result = await self.execute_tool(tool_name, args)
             return result.model_dump()
 
         @router.get("/health")
-        async def health():
+        async def health(current_user: User = Depends(get_current_user)):
             return {"status": "ok", "server": self.name, "tag": self.business_tag}
 
         return router

@@ -16,7 +16,6 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.permissions import get_agent_with_rls
 from app.models.user import User
 from app.models.conversation import Conversation
 from app.orchestrator.state import (
@@ -31,6 +30,26 @@ from app.orchestrator.errors import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _json_safe(obj):
+    """递归将 numpy/scalar 类型转换为原生 Python 类型，确保 JSON 可序列化。"""
+    import math
+    if isinstance(obj, (int, float, str, bool, type(None))):
+        return obj
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_safe(item) for item in obj]
+    # numpy 整数/浮点数 → Python 原生
+    if hasattr(obj, "dtype"):
+        if "int" in str(obj.dtype):
+            return int(obj)
+        if "float" in str(obj.dtype):
+            v = float(obj)
+            return v if not math.isnan(v) and math.isfinite(v) else None
+        return str(obj)
+    return str(obj)
 
 
 class OrchestratorAgent:
@@ -144,7 +163,8 @@ class OrchestratorAgent:
             )
 
             # 持久化到 Conversation 表（保持向后兼容）
-            await self._persist_conversation(question, intent_result, sql_result, report_result)
+            conv_id = await self._persist_conversation(question, intent_result, sql_result, report_result)
+            response["conversation_id"] = str(conv_id) if conv_id else session_id
 
             return response
 
@@ -155,6 +175,7 @@ class OrchestratorAgent:
             return {
                 "session_id": self.session_id,
                 "turn_id": turn_id,
+                "conversation_id": self.session_id,
                 "question": question,
                 "intent": "error",
                 "analysis_depth": "simple",
@@ -174,6 +195,7 @@ class OrchestratorAgent:
             return {
                 "session_id": self.session_id,
                 "turn_id": turn_id,
+                "conversation_id": self.session_id,
                 "question": question,
                 "intent": "error",
                 "analysis_depth": "simple",
@@ -206,11 +228,12 @@ class OrchestratorAgent:
             return {
                 "session_id": session_id,
                 "turn_id": turn_id,
+                "conversation_id": session_id,  # 临时值，run() 中会用真实 conv.id 覆盖
                 "question": question,
                 "intent": intent_type,
                 "analysis_depth": depth,
                 "sql_generated": sql_result.sql if sql_result else "",
-                "insights": report_result.insights,
+                "insights": _json_safe(report_result.insights),
                 "report_markdown": report_result.report_markdown,
                 "followups": report_result.followups,
                 "conversation_history": history,
@@ -234,6 +257,7 @@ class OrchestratorAgent:
             return {
                 "session_id": session_id,
                 "turn_id": turn_id,
+                "conversation_id": session_id,
                 "question": question,
                 "intent": "error",
                 "analysis_depth": "simple",
@@ -249,6 +273,7 @@ class OrchestratorAgent:
         return {
             "session_id": session_id,
             "turn_id": turn_id,
+            "conversation_id": session_id,
             "question": question,
             "intent": "error",
             "analysis_depth": "simple",
@@ -261,13 +286,16 @@ class OrchestratorAgent:
         }
 
     async def _persist_conversation(self, question, intent_result, sql_result, report_result):
-        """持久化到 Conversation 表"""
+        """持久化到 Conversation 表，返回 conversation.id"""
         try:
             intent_type_str = intent_result.intent_type.value if intent_result else "unknown"
             depth_str = intent_result.analysis_depth if intent_result else "simple"
             sql = sql_result.sql if sql_result else ""
             insights = report_result.insights if report_result else []
             report_md = report_result.report_markdown if report_result else ""
+
+            # 将 insights 中的 numpy 类型转换为原生 Python 类型（JSON 可序列化）
+            insights = _json_safe(insights)
 
             conv = Conversation(
                 user_id=self.user.id,
@@ -281,6 +309,9 @@ class OrchestratorAgent:
             )
             self.db.add(conv)
             await self.db.commit()
+            await self.db.refresh(conv)
+            return conv.id
         except Exception as e:
             logger.warning(f"持久化 Conversation 失败: {e}")
             await self.db.rollback()
+            return None
