@@ -17,3 +17,4 @@ venv/
 *.bak
 server_*.log
 backend/test_roles.ps1
+backend/scripts/
