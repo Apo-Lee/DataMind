@@ -15,10 +15,11 @@ import asyncio
 import logging
 import os
 
-from sqlalchemy import select
+from sqlalchemy import select, func as sa_func
 from app.database import async_session, init_db
 from app.models.user import User, UserRole, DataScope
 from app.models.datasource import DataSource, DataSourcePermission
+from app.models.system_config import SystemConfig
 from app.core.auth import hash_password
 from app.core.encryption import encrypt
 from app.config import settings
@@ -125,7 +126,7 @@ async def seed():
 
         # ========== 5. HR 同步 → 创建系统用户 ==========
         try:
-            from app.agents.factory import agent_factory
+            from app.core.agent_factory import agent_factory
             from app.core.hr_sync import sync_hr_to_users
 
             hr_ds = created_ds.get("hr")
@@ -137,6 +138,40 @@ async def seed():
         except Exception as e:
             print(f"[SEED] HR 同步警告 (首次启动填0正常): {e}")
 
+        
+        # ========== 7. ?????? ==========
+        from app.models.audit_log import AuditLog, AuditAction
+        
+        audit_logs_count = (await db.execute(select(sa_func.count(AuditLog.id)))).scalar() or 0
+        if audit_logs_count == 0:
+            demo_logs = [
+                AuditLog(username="admin", action="login", resource_type="auth", detail={"method": "password"}, ip_address="127.0.0.1"),
+                AuditLog(username="admin", action="query_executed", resource_type="datasource", detail={"ds": "hr_demo", "tables": ["employees"]}, ip_address="127.0.0.1"),
+                AuditLog(username="admin", action="config_changed", resource_type="system_config", resource_id="app.name", detail={"action": "update", "value": "DataMind"}, ip_address="127.0.0.1"),
+                AuditLog(username="admin", action="permission_changed", resource_type="datasource", detail={"action": "grant", "role": "employee", "ds": "finance_demo"}, ip_address="127.0.0.1"),
+                AuditLog(username="admin", action="hr_sync", resource_type="system", detail={"created": 10, "updated": 2, "deactivated": 0}, ip_address="127.0.0.1"),
+            ]
+            for log in demo_logs:
+                db.add(log)
+            print("[SEED] ??????(??)?: 5 ?")
+
+        # ========== 8. ?????? ==========
+        config_defaults = [
+            ("app.name", "DataMind", "string", "????"),
+            ("app.admin_email", "admin@datamind.local", "string", "?????"),
+            ("app.page_size", "50", "int", "????????"),
+            ("analysis.llm_model", "deepseek-chat", "string", "??? LLM ??"),
+            ("analysis.deep_analyze_enabled", "true", "bool", "????????"),
+            ("query.timeout_seconds", "120", "int", "??????"),
+            ("security.session_expire_minutes", "1440", "int", "??????(??)"),
+            ("audit.retention_days", "90", "int", "????????"),
+        ]
+        for key, value, value_type, desc in config_defaults:
+            r = await db.execute(select(SystemConfig).where(SystemConfig.key == key))
+            cfg = r.scalar_one_or_none()
+            if cfg is None:
+                db.add(SystemConfig(key=key, value=value, value_type=value_type, description=desc, updated_by="system"))
+        
         await db.commit()
 
         logger.info("=" * 50)

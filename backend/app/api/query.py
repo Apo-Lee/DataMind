@@ -30,11 +30,35 @@ async def ask_question(
 
     内部经过：权限校验 → 意图识别 → SQL/Tools → 分析 → 报告。
     """
+    # 自动检测数据源（如果未提供 datasource_id）
+    if not body.datasource_id:
+        from app.orchestrator.datasource_router import detect_datasource
+        ds_id, business_tag, reason = await detect_datasource(body.question, current_user, db)
+        if ds_id is None:
+            # ?????????????????
+            user_role = current_user.role.value if hasattr(current_user.role, 'value') else current_user.role
+            if user_role == "admin":
+                report_md = "**📡 没有可用的数据源**\n\n当前系统没有配置任何数据源。请前往「数据源管理」页面添加数据源后再使用。\n\n添加步骤：\n1. 点击左侧导航「数据源管理」\n2. 点击「新增数据源」\n3. 填写数据库连接信息并保存"
+            elif user_role == "viewer":
+                report_md = "**👀 暂无可用数据**\n\n你的账号是只读角色，目前没有分配任何数据源。请联系管理员为你分配权限。"
+            else:
+                report_md = "**📡 没有可用的数据源**\n\n当前没有你可以访问的数据源。请联系管理员确认：\n1. 是否已配置数据源\n2. 你的账号是否有数据源权限"
+            return AskResponse(
+                conversation_id="",
+                intent="error",
+                analysis_depth="simple",
+                sql_generated="",
+                insights=[],
+                report_markdown=report_md,
+            )
+        body.datasource_id = ds_id
+        logger.info(f"[ask-auto] {body.question} -> {business_tag} ({reason})")
+
     # 权限检查（只做数据源可见性，RLS 由 MCP server 端 contextvar 保证）
     await check_datasource_access(current_user, body.datasource_id, db)
 
     orchestrator = OrchestratorAgent(current_user, body.datasource_id, db)
-    result = await orchestrator.run(question=body.question)
+    result = await orchestrator.run(question=body.question, deep_analyze=body.deep_analyze)
 
     # 映射到 AskResponse（前端只需 conversation_id + 报告字段）
     conv_id = result.get("conversation_id") or result.get("session_id", "")

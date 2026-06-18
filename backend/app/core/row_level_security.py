@@ -74,7 +74,7 @@ class RowLevelSecurityEngine:
                 allowed.add(base_dept_id)
             if self.user.employee_id is not None:
                 try:
-                    from app.agents.factory import agent_factory
+                    from app.core.agent_factory import agent_factory
                     hr_agent = agent_factory.get_agent_by_tag("hr")
                     if hr_agent is not None:
                         engine = hr_agent.engine
@@ -114,7 +114,7 @@ class RowLevelSecurityEngine:
         """递归获取所有子部门 ID"""
         sub_ids: set[int] = set()
         try:
-            from app.agents.factory import agent_factory
+            from app.core.agent_factory import agent_factory
             hr_agent = agent_factory.get_agent_by_tag("hr")
             if hr_agent is None:
                 return sub_ids
@@ -164,7 +164,7 @@ class RowLevelSecurityEngine:
             return await self._get_employees_by_dept(list(dept_ids))
 
         try:
-            from app.agents.factory import agent_factory
+            from app.core.agent_factory import agent_factory
             from app.models.datasource import DataSource as DSModel
 
             hr_result = await self.db.execute(
@@ -193,7 +193,7 @@ class RowLevelSecurityEngine:
         if not dept_ids:
             return None
         try:
-            from app.agents.factory import agent_factory
+            from app.core.agent_factory import agent_factory
             from app.models.datasource import DataSource as DSModel
 
             hr_result = await self.db.execute(

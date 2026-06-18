@@ -1,0 +1,5 @@
+# DataMind 开发依赖（测试 & 工具）
+# 安装: pip install -r requirements-dev.txt
+pytest>=9.0.0
+pytest-asyncio>=0.25.0
+httpx>=0.28.0

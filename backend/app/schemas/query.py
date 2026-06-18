@@ -1,4 +1,4 @@
-﻿"""问答相关 Pydantic schemas"""
+"""问答相关 Pydantic schemas"""
 
 from datetime import datetime, timezone
 
@@ -6,8 +6,9 @@ from pydantic import BaseModel, field_validator
 
 
 class AskRequest(BaseModel):
-    datasource_id: str
+    datasource_id: str = ""
     question: str
+    deep_analyze: bool = False
 
 
 class AskResponse(BaseModel):
@@ -91,3 +92,7 @@ class AgentAskResponse(BaseModel):
     followups: list[str] = []
     conversation_history: list[dict] = []
     error: str | None = None
+class AutoAskRequest(BaseModel):
+    """自动检测数据源问答请求"""
+    question: str
+

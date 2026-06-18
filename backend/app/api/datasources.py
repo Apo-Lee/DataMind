@@ -8,7 +8,7 @@ from sqlalchemy import select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import create_engine as create_sync_engine
 
-from app.agents.factory import agent_factory
+from app.core.agent_factory import agent_factory
 from app.core.audit import write_audit_log
 from app.core.encryption import encrypt, safe_decrypt
 from app.core.permissions import require_admin

@@ -1,0 +1,85 @@
+﻿name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements-dev.txt
+      - name: Syntax check
+        run: |
+          source .venv/bin/activate
+          python -m py_compile app/**/*.py
+          echo "All files compile OK"
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Run unit tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/ -v --tb=short -x
+
+  integration-tests:
+    needs: [unit-tests]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Start server and run integration tests
+        run: |
+          source .venv/bin/activate
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+          for i in $(seq 1 12); do
+            if curl -sf http://127.0.0.1:8000/api/health > /dev/null 2>&1; then
+              echo "Server ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+          python -m pytest tests/test_integration.py tests/test_services.py -v --tb=short -x

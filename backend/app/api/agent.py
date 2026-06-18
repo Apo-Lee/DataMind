@@ -14,11 +14,66 @@ from app.models.user import User
 from app.orchestrator import OrchestratorAgent
 from app.orchestrator.errors import make_friendly_query_error, make_friendly_error
 from app.schemas.query import (
-    AgentAskResponse, SessionCreateRequest, SessionFollowUpRequest,
+    AgentAskResponse, SessionCreateRequest, SessionFollowUpRequest, AutoAskRequest,
 )
 
 router = APIRouter(prefix="/api/agent", tags=["Agent 问答"])
 logger = logging.getLogger(__name__)
+
+
+
+@router.post("/ask-auto", response_model=AgentAskResponse)
+async def agent_ask_auto(
+    body: AutoAskRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """智能问答 — 自动检测数据源
+
+    不再需要前端传入 datasource_id，
+    系统根据问题内容自动路由到最匹配的数据源。
+    """
+    from app.orchestrator.datasource_router import detect_datasource
+
+    datasource_id, business_tag, reason = await detect_datasource(body.question, current_user, db)
+    if datasource_id is None:
+        return AgentAskResponse(
+            session_id="",
+            turn_id="",
+            question=body.question,
+            intent="error",
+            analysis_depth="simple",
+            sql_generated="",
+            insights=[],
+            report_markdown="**\U0001f605 没有可用的数据源**\n\n当前系统没有配置任何数据源，请联系管理员添加。",
+            followups=[],
+            conversation_history=[],
+            error="no_datasource: " + reason,
+        )
+
+    logger.info(f"数据源自动检测: [{body.question}] -> {business_tag} ({reason})")
+
+    orchestrator = OrchestratorAgent(current_user, datasource_id, db)
+    result = await orchestrator.run(question=body.question)
+
+    if result.get("error"):
+        error_type = result.get("error_type", "unknown_error")
+        friendly = make_friendly_error(error_type, result["error"], result.get("sql_generated", ""))
+        return AgentAskResponse(
+            session_id=result.get("session_id", ""),
+            turn_id=result.get("turn_id", ""),
+            question=body.question,
+            intent="error",
+            analysis_depth="simple",
+            sql_generated=result.get("sql_generated", ""),
+            insights=[],
+            report_markdown=friendly.to_user_response()["report_markdown"],
+            followups=friendly.to_user_response()["followups"],
+            conversation_history=result.get("conversation_history", []),
+            error=friendly.to_user_response()["error"],
+        )
+
+    return AgentAskResponse(**result)
 
 
 @router.post("/ask", response_model=AgentAskResponse)

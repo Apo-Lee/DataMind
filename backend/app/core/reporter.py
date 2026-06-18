@@ -1,4 +1,6 @@
-﻿"""报告组装 Agent — 将分析结果组装为 Markdown 报告"""
+import logging
+logger = logging.getLogger("__main__")
+"""报告组装 Agent — 将分析结果组装为 Markdown 报告"""
 
 import pandas as pd
 

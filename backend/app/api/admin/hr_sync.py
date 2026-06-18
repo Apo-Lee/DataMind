@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func as sa_func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.factory import agent_factory
+from app.core.agent_factory import agent_factory
 from app.core.audit import write_audit_log
 from app.core.hr_sync import sync_hr_to_users
 from app.core.permissions import require_admin

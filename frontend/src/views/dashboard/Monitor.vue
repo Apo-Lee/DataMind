@@ -54,6 +54,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { adminApi } from '@/api/admin'
+import { ElMessage } from "element-plus"
 
 const health = ref<any>(null)
 const stats = ref<any>(null)

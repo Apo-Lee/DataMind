@@ -66,7 +66,7 @@
     <div class="pager">
       <button class="pager-btn" :disabled="page <= 1" @click="page--; fetchLogs()">上一页</button>
       <span class="pager-info">第 {{ page }} 页</span>
-      <button class="pager-btn" :disabled="logs.length < pageSize" @click="page++; fetchLogs()">下一页</button>
+      <button class="pager-btn" :disabled="(page * pageSize) >= total && logs.length < pageSize" @click="page++; fetchLogs()">下一页</button>
     </div>
   </div>
 </template>
@@ -82,6 +82,7 @@ const page = ref(1)
 const pageSize = ref(50)
 const filterUsername = ref('')
 const filterAction = ref('')
+const total = ref(0)
 
 const actionLabels: Record<string, string> = {
   login: '登录', logout: '登出', query_executed: '查询', sql_executed: 'SQL执行',
@@ -119,7 +120,8 @@ async function fetchLogs() {
     if (filterUsername.value) params.username = filterUsername.value
     if (filterAction.value) params.action = filterAction.value
     const r = await adminApi.listAuditLogs(params)
-    logs.value = r.data
+    logs.value = r.data.items || r.data
+      total.value = r.data.total || 0
   } catch (e: any) { ElMessage.error('加载日志失败') } finally { loading.value = false }
 }
 

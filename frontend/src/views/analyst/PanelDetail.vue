@@ -205,11 +205,12 @@ function onResize() {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* KPI 行 */
-.detail-kpi-row { display: flex; gap: 14px; padding: 18px 24px; flex-shrink: 0; overflow-x: auto; }
+.detail-kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; padding: 18px 24px; flex-shrink: 0; }
 .kpi-card {
-  flex: 1; min-width: 130px; padding: 16px 18px; background: var(--dm-card);
+  padding: 16px 18px; background: var(--dm-card);
   border-radius: var(--radius); border: 1px solid var(--dm-border); text-align: center;
   box-shadow: var(--shadow-card); transition: all 0.2s var(--ease-out);
+  overflow: hidden;
 }
 .kpi-card:hover { box-shadow: var(--shadow-card-hover); transform: translateY(-1px); }
 .kpi-value { font-family: var(--font-display); font-size: 30px; font-weight: 800; color: var(--dm-text); letter-spacing: -0.02em; line-height: 1.2; }

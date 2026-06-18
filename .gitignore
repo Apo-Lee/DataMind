@@ -18,3 +18,12 @@ venv/
 server_*.log
 backend/test_roles.ps1
 backend/scripts/
+# Large media files (not committed to git)
+*.wmv
+*.mp4
+*.mov
+*.avi
+*.webm
+
+# Temp build scripts
+_write_*

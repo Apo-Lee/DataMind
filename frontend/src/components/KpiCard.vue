@@ -90,14 +90,18 @@ function handleClick() {
 
 <style scoped>
 .kpi-card {
-  flex: 1;
-  min-width: 100px;
+  min-width: 0;
   padding: 12px 14px;
   border-radius: var(--radius);
   background: var(--dm-surface);
   text-align: center;
   transition: all 0.2s var(--ease-out);
   border: 1px solid transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
 }
 .kpi-card:hover {
   transform: translateY(-2px);
@@ -115,6 +119,10 @@ function handleClick() {
   font-weight: 800;
   letter-spacing: -0.02em;
   line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 .kpi-number { }
 .kpi-unit {

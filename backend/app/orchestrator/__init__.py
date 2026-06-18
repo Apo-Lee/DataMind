@@ -1,4 +1,4 @@
-﻿"""Orchestrator Agent — DataMind 多 Agent 编排主入口
+"""Orchestrator Agent — DataMind 多 Agent 编排主入口
 
 Orchestrator 是用户和 LangGraph 之间的桥梁：
 1. 初始化 AgentContext（含用户对象引用）
@@ -11,7 +11,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Callable, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,6 +74,8 @@ class OrchestratorAgent:
         question: str,
         session_id: str | None = None,
         turn_history: list[dict] | None = None,
+        deep_analyze: bool = False,
+        progress_callback: Callable | None = None,
     ) -> dict:
         """执行一个完整的 Agent 问答流程
 
@@ -132,8 +134,11 @@ class OrchestratorAgent:
             "original_question": question,
             "context": context,
             "turn_history": turn_history or [],
+            "deep_analyze": deep_analyze,
             "intent_result": None,
             "sql_result": None,
+            "mcp_result": None,
+            "quality_check": None,
             "analysis_result": None,
             "report_result": None,
             "last_error": None,
@@ -168,6 +173,8 @@ class OrchestratorAgent:
 
             return response
 
+            # 获取用户角色用于生成角色感知的错误消息
+
         except AgentFriendlyError as e:
             # 已知友好的异常
             logger.warning(f"Agent Friendly Error: {e.detail}")
@@ -190,7 +197,7 @@ class OrchestratorAgent:
         except Exception as e:
             # 未知异常
             logger.error(f"Agent 执行异常: {e}", exc_info=True)
-            friendly = make_friendly_error("unknown_error", str(e))
+            friendly = make_friendly_error("unknown_error", str(e), role=user_role)
             friendly_resp = friendly.to_user_response()
             return {
                 "session_id": self.session_id,
@@ -252,6 +259,7 @@ class OrchestratorAgent:
                 report_result.error_type,
                 error_msg,
                 sql_str,
+                role=user_role,
             )
             friendly_resp = friendly.to_user_response()
             return {
@@ -287,6 +295,7 @@ class OrchestratorAgent:
 
     async def _persist_conversation(self, question, intent_result, sql_result, report_result):
         """持久化到 Conversation 表，返回 conversation.id"""
+
         try:
             intent_type_str = intent_result.intent_type.value if intent_result else "unknown"
             depth_str = intent_result.analysis_depth if intent_result else "simple"

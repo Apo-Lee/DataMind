@@ -1,6 +1,6 @@
 """Agent 工厂 — 按数据源创建 & 缓存 Agent 实例"""
 
-from app.agents.base import DataSourceAgent
+from app.core.agent_base import DataSourceAgent
 from app.core.encryption import safe_decrypt
 from app.models.datasource import DataSource
 

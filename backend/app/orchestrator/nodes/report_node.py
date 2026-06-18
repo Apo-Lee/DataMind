@@ -1,5 +1,8 @@
 """Report Agent Node — 报告组装 + 追问建议节点
 
+    # 获取数据源（优先使用 mcp_result）
+    result_source = mcp_result or sql_result
+
 根据 intent 类型选择报告模板，组装 Markdown 报告，
 并生成有业务价值的追问建议。
 """
@@ -54,6 +57,7 @@ async def report_node(state: AgentState) -> dict:
     context = state.get("context")
     intent_result: IntentResult | None = state.get("intent_result")
     sql_result = state.get("sql_result")
+    mcp_result = state.get("mcp_result")
     analysis_result = state.get("analysis_result")
 
     if context is None:
@@ -77,6 +81,27 @@ async def report_node(state: AgentState) -> dict:
         }
 
     if intent_result and intent_result.intent_type == IntentType.help:
+        user_role = context.user_role if context else None
+        user_role = context.user_role if context else None
+        role_greetings = {
+            "employee": "我可以帮你查询和分析个人数据。试试问我：",
+            "dept_manager": "我可以帮你查询本部门的各类数据。试试问我：",
+            "dept_ceo": "我可以帮你查看部门全景数据。试试问我：",
+            "sales_manager": "我可以帮你查询销售团队的业绩数据。试试问我：",
+            "finance_bp": "我可以帮你分析预算和费用数据。试试问我：",
+            "hr_director": "我可以帮你查询全公司的HR数据。试试问我：",
+            "admin": "我拥有全系统数据访问权限，可以帮你查询任意数据。试试问我：",
+        }
+        role_hello = role_greetings.get(user_role, "我可以用自然语言帮你查询和分析数据。试试问我：")
+        role_followups = {
+            "employee": ["我的出勤记录", "我的绩效评分", "查看部门信息"],
+            "dept_manager": ["部门人员统计", "部门预算情况", "员工出勤率"],
+            "dept_ceo": ["部门全景数据", "部门预算使用", "团队人员结构"],
+            "finance_bp": ["各部门预算使用率", "今年费控趋势分析", "超支预警部门"],
+            "hr_director": ["各部门在职人数统计", "近半年绩效趋势", "本月新入职员工"],
+            "admin": ["各部门人力分布如何", "本月费用支出概览", "客户跟进状态统计"],
+        }
+        fups = role_followups.get(user_role, ["查看数据概览", "统计各部门人数"])
         return {
             "report_result": ReportResult(
                 status="success",
@@ -91,18 +116,21 @@ async def report_node(state: AgentState) -> dict:
                                 "- 异常检测：**「哪些数据异常」**\n\n"
                                 "### 跨域分析\n"
                                 "- **「对比 HR 和 CRM 数据」**",
-                followups=["查看各部门出勤率", "分析近6个月销售趋势"],
+                followups=["看看我能查什么", "有哪些数据可查"],
             ),
         }
 
-    # 构建数据摘要
-    df = sql_result.df if sql_result else None
-    sql = sql_result.sql if sql_result else ""
-    analysis_data = dataclasses.asdict(analysis_result) if analysis_result and analysis_result.status == "success" else None
+    # 获取数据源
+    result_source = mcp_result or sql_result
 
-        # 生成报告 - 所有查询都用 LLM 生成智能报告，失败时降级
+    # 构建数据摘要
+    df = result_source.df if result_source else None
+    sql = result_source.sql if result_source else ""
+
+# 生成报告 - 所有查询都用 LLM 生成智能报告，失败时降级
     try:
-        if intent_result and intent_result.analysis_depth == "complex":
+        deep_analyze = state.get("deep_analyze", False)
+        if (intent_result and intent_result.analysis_depth == "complex") or deep_analyze:
             analysis_for_report = {
                 "status": analysis_result.status if analysis_result else "error",
                 "data": {

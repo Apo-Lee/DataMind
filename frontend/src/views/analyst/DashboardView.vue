@@ -1,4 +1,4 @@
-﻿<template>
+<template>
   <div class="cockpit">
     <header class="cockpit-top">
       <div class="cockpit-brand">
@@ -9,7 +9,7 @@
       <!-- A) 推荐提问胶囊 -->
       <div class="suggest-bar">
         <span class="suggest-greeting">{{ greeting }}</span>
-        <button v-for="q in quickQuestions" :key="q" class="suggest-chip" @click="handleAsk(q)" :disabled="asking || !store.mainPanel">{{ q }}</button>
+        <button v-for="q in quickQuestions" :key="q" class="suggest-chip" @click="handleAsk(q, deepAnalyze)" :disabled="asking || !store.mainPanel">{{ q }}</button>
       </div>
 
       <div class="cockpit-meta">
@@ -35,7 +35,7 @@
                 <span v-if="store.mainPanel.is_primary" class="primary-star">★ 主看板</span>
               </div>
               <div class="main-panel-kpis">
-                <KpiCard v-for="(kpi, ki) in store.mainPanel.kpi_cards" :key="'m-'+ki" v-bind="kpi" @drill="handleAsk" />
+                <KpiCard v-for="(kpi, ki) in store.mainPanel.kpi_cards" :key="'m-'+ki" v-bind="kpi" @drill="(q: string) => handleAsk(q, deepAnalyze)" />
               </div>
               <div class="main-panel-charts" v-if="store.mainPanel.charts && store.mainPanel.charts.length > 0">
                 <div v-for="(ch, ci) in store.mainPanel.charts" :key="store.mainPanel.datasource_id + '-' + ch.id" class="chart-card">
@@ -66,7 +66,7 @@
                   <span class="sub-panel-tag" :class="'tag-'+panel.business_tag">{{ panel.business_tag }}</span>
                 </div>
                 <div class="sub-panel-kpis">
-                  <KpiCard v-for="(kpi, ki) in panel.kpi_cards" :key="'s-'+ki" v-bind="kpi" @drill="handleAsk" />
+                  <KpiCard v-for="(kpi, ki) in panel.kpi_cards" :key="'s-'+ki" v-bind="kpi" @drill="(q: string) => handleAsk(q, deepAnalyze)" />
                 </div>
                 <div v-if="panel.kpi_cards.length === 0" class="sub-panel-empty">
                   当前角色暂无该数据源的 KPI 视图权限
@@ -89,7 +89,7 @@
               </option>
             </select>
           </div>
-          <QueryInput :loading="asking" :placeholder="inputPlaceholder" @send="handleAsk" @cancel="handleCancel" />
+          <QueryInput :loading="asking" :placeholder="inputPlaceholder" @send="handleAskPayload" @cancel="handleCancelAsk" />
         </footer>
       </main>
 
@@ -113,11 +113,11 @@
             <div class="terminal-output" ref="termRef">
               <div v-if="terminalLogs.length === 0 && !asking" class="terminal-empty"><span class="term-prompt">$</span> 等待 AI 分析任务…</div>
               <div v-for="(line, i) in terminalLogs" :key="i" class="term-line" :class="`term-${line.level}`"><span class="term-time">{{ line.time }}</span><span class="term-prompt">{{ line.level === 'error' ? '✗' : line.level === 'success' ? '✓' : line.level === 'warn' ? '⚠' : '▸' }}</span><span>{{ line.text }}</span><code v-if="line.code" class="term-code">{{ line.code }}</code></div>
-              <div v-if="asking" class="term-line term-info"><span class="term-spinner"></span><span>{{ currentStep || '分析中…' }}</span></div>
+              <div v-if="asking" class="term-line term-info"><span class="term-spinner"></span><span>{{ currentStep || 'AI 分析中…' }}</span><span class="term-elapsed">{{ elapsedTime }}</span></div>
             </div>
           </div>
           <div v-if="sideTab === 'report'" class="report-pane">
-            <div v-if="lastReport" class="side-report"><div class="side-report-meta"><span class="side-report-q">{{ lastReport.question }}</span><span class="side-report-tag">{{ lastReport.intent }}</span></div><div class="side-report-body"><MarkdownReport :content="lastReport.markdown" /></div><button class="primary-btn-sm" @click="router.push(`/analyst/${lastReport.id}`)" style="margin-top:12px">查看完整报告</button></div>
+            <div v-if="lastReport" class="side-report"><div class="side-report-meta"><span class="side-report-q">{{ lastReport.question }}</span><span class="side-report-tag">{{ lastReport.intent }}</span><span v-if="lastReport.deepAnalyze" class="side-report-deep-badge">深度分析</span><span v-if="lastReport.insights?.length" class="side-report-insight-count">{{ lastReport.insights.length }} 项洞察</span></div><div class="side-report-body"><div v-for="(ins, ii) in chartItems" :key="'chart-'+ii" :ref="el => setChartRef(ii, el)" :style="{height:'280px', width:'100%'}" class="chart-container"></div><MarkdownReport :content="lastReport.markdown" /></div><button class="primary-btn-sm" @click="router.push(`/analyst/${lastReport.id}`)" style="margin-top:12px">查看完整报告</button></div>
             <div v-else class="terminal-empty">尚无分析结果</div>
           </div>
           <div v-if="sideTab === 'history'" class="history-pane">
@@ -160,8 +160,35 @@ interface LogLine { time: string; level: 'info' | 'success' | 'error' | 'warn'; 
 const terminalLogs = ref<LogLine[]>([])
 const termRef = ref<HTMLElement>()
 const asking = ref(false)
+const deepAnalyze = ref(false)
+// Watch deepAnalyze toggle from QueryInput via the payload
+// deepAnalyze is also used by suggest-chip clicks
 const currentStep = ref('')
-const lastReport = ref<{ id: string; question: string; intent: string; markdown: string; insights?: any[] } | null>(null)
+const elapsedTime = ref('')
+let elapsedTimer: ReturnType<typeof setInterval> | null = null
+function startElapsedTimer() {
+  const start = Date.now()
+  elapsedTimer = setInterval(() => {
+    const secs = Math.floor((Date.now() - start) / 1000)
+    const m = Math.floor(secs / 60)
+    const s = secs % 60
+    elapsedTime.value = m > 0 ? `${m}分${s}秒` : `${s}秒`
+  }, 1000)
+}
+function stopElapsedTimer() {
+  if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
+  elapsedTime.value = ''
+}
+const lastReport = ref<{ id: string; question: string; intent: string; markdown: string; insights?: any[]; deepAnalyze?: boolean } | null>(null)
+const chartInstances = ref<Record<number, any>>({})
+const chartContainers = ref<Record<number, HTMLElement>>({})
+const chartItems = computed(() => {
+  if (!lastReport.value?.insights) return []
+  return lastReport.value.insights.filter((ins: any) => ins.type === 'chart')
+})
+function setChartRef(idx: number, el: any) {
+  if (el) chartContainers.value[idx] = el as HTMLElement
+}
 const history = ref<any[]>([])
 // P0#4: 数据源选择器
 const selectedDsId = ref<string>('')
@@ -239,8 +266,32 @@ function addLog(level: LogLine['level'], text: string, code?: string) {
 function formatTime(t?: string) { if (!t) return '—'; return new Date(t).toLocaleString('zh-CN', { dateStyle: 'short', timeStyle: 'short' }) }
 function handleLogout() { authStore.logout(); router.push('/login') }
 
+// 图表渲染 - 分析报告中的 ECharts 图表
+watch(() => lastReport.value?.insights, async (insights) => {
+  // 先销毁旧图表
+  Object.values(chartInstances.value).forEach((inst: any) => { try { inst.dispose() } catch {} })
+  chartInstances.value = {}
+  if (!insights || insights.length === 0) return
+  await nextTick()
+  insights.forEach((ins: any, idx: number) => {
+    if (ins.type !== 'chart') return
+    const container = chartContainers.value[idx]
+    if (!container) return
+    try {
+      const chart = echarts.init(container)
+      chart.setOption(ins.content || {})
+      chartInstances.value[idx] = chart
+      const handler = () => chart.resize()
+      window.addEventListener('resize', handler)
+      ;(chart as any)._dmResizeHandler = handler
+    } catch (e) {
+      console.warn('Chart render failed:', e)
+    }
+  })
+}, { deep: true })
+
 // V2.4: 图表挂载
-const chartInstances = new Map<string, echarts.ECharts>()
+const mainChartInstances = new Map<string, echarts.ECharts>()
 const resizeObservers = new Map<string, ResizeObserver>()
 const mainChartRefs: Record<string, HTMLElement | null> = {}
 const subChartRefs: Record<string, HTMLElement | null> = {}
@@ -257,8 +308,8 @@ function doMountCharts() {
   // 清理旧的图表和 ResizeObserver
   resizeObservers.forEach((ro) => ro.disconnect())
   resizeObservers.clear()
-  chartInstances.forEach((inst) => inst.dispose())
-  chartInstances.clear()
+  mainChartInstances.forEach((inst) => inst.dispose())
+  mainChartInstances.clear()
 
   // 1) 主看板 — 完整渲染
   const panel = store.mainPanel
@@ -293,7 +344,7 @@ function doMountCharts() {
         option.title = { text: ch.title, left: 'center', top: 0, textStyle: { fontSize: 12, fontWeight: 700 } }
       }
       chart.setOption(option)
-      chartInstances.set(key, chart)
+      mainChartInstances.set(key, chart)
       const ro = new ResizeObserver((entries) => {
         for (const entry of entries) {
           const cr = entry.contentRect
@@ -336,7 +387,7 @@ function doMountCharts() {
       }
     }
     chart.setOption(option)
-    chartInstances.set(key, chart)
+    mainChartInstances.set(key, chart)
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const cr = entry.contentRect
@@ -355,16 +406,23 @@ function mountCharts() {
 
 // P0#14: 窗口 resize 时统一触发所有图表 resize，防止 grid 列变化时 canvas 错位
 function handleWindowResize() {
-  chartInstances.forEach((chart) => chart.resize())
+  mainChartInstances.forEach((chart) => chart.resize())
 }
 window.addEventListener('resize', handleWindowResize)
 
 onBeforeUnmount(() => {
+  stopElapsedTimer()
+  Object.values(chartInstances.value).forEach((inst: any) => {
+    try {
+      if ((inst as any)._dmResizeHandler) window.removeEventListener('resize', (inst as any)._dmResizeHandler)
+      inst.dispose()
+    } catch {}
+  })
   window.removeEventListener('resize', handleWindowResize)
   resizeObservers.forEach((ro) => ro.disconnect())
   resizeObservers.clear()
-  chartInstances.forEach((inst) => inst.dispose())
-  chartInstances.clear()
+  mainChartInstances.forEach((inst) => inst.dispose())
+  mainChartInstances.clear()
   if (abortController.value) {
     abortController.value.abort()
     abortController.value = null
@@ -401,6 +459,7 @@ function handleCancel() {
     abortController.value.abort()
     abortController.value = null
   }
+  stopElapsedTimer()
   asking.value = false
   currentStep.value = ''
   addLog('warn', '分析已取消')
@@ -408,17 +467,23 @@ function handleCancel() {
   ElMessage.warning('已断开连接，后端任务可能仍在执行中')
 }
 
-async function handleAsk(question: string) {
+async function handleAskPayload(payload: { question: string; deepAnalyze: boolean }) {
+  handleAsk(payload.question, payload.deepAnalyze)
+}
+function handleCancelAsk() { deepAnalyze.value = false; stopElapsedTimer(); if (abortController.value) { abortController.value.abort(); asking.value = false } }
+
+async function handleAsk(question: string, deepAnalyze: boolean = false) {
   const dsId = selectedDsId.value || store.mainPanel?.datasource_id
   if (!dsId) return
   asking.value = true
+  startElapsedTimer()
   // P0#5: 不在这里清空日志，保留最近的 3 次分析历史
   abortController.value = new AbortController()
   addLog('info', `收到问题: ${question}`)
   try {
     currentStep.value = STEP_LABELS.intent
     addLog('info', 'STEP 1: 意图识别 — 分析问题复杂度与数据范围')
-    const resp = await queryApi.ask(dsId, question, abortController.value.signal); const d = resp.data
+    const resp = dsId ? await queryApi.ask(dsId, question, deepAnalyze, abortController.value.signal) : await queryApi.askAuto(question, deepAnalyze, abortController.value.signal); const d = resp.data
     addLog('success', `意图识别完成 → ${d.intent}（${d.analysis_depth === 'complex' ? '深度分析' : '快速查询'}）`)
     currentStep.value = STEP_LABELS.sql
     addLog('info', 'STEP 2: SQL 生成 — 根据表结构生成查询')
@@ -453,7 +518,7 @@ async function handleAsk(question: string) {
     currentStep.value = STEP_LABELS.report
     addLog('info', 'STEP 5: 报告组装 — 生成 Markdown 分析报告')
     addLog('success', '分析完成')
-    lastReport.value = { id: d.conversation_id, question, intent: d.intent, markdown: d.report_markdown, insights: d.insights }
+    lastReport.value = { id: d.conversation_id, question, intent: d.intent, markdown: d.report_markdown, insights: d.insights, deepAnalyze }
     loadHistory()
     // 仅在用户未手动切换标签时自动跳到结果
     if (sideTab.value === 'terminal') sideTab.value = 'report'
@@ -463,16 +528,44 @@ async function handleAsk(question: string) {
       addLog('warn', '分析已取消')
       return
     }
-    // P1#14: 分类错误指引
-    const detail = e?.response?.data?.detail || e?.message || '未知错误'
+        // 增强版分类错误指引
+    const detail = e?.response?.data?.detail || e?.message || e?.toString() || '未知错误'
     const status = e?.response?.status
-    addLog('error', `分析失败: ${detail}`)
-    if (status === 404) addLog('warn', '💡 数据源不存在或已被删除，请检查数据源配置。')
-    else if (status === 403) addLog('warn', '💡 您没有该数据源的访问权限，请联系管理员分配。')
-    else if (status === 400 && detail.includes('SQL')) addLog('warn', '💡 查询生成失败，请尝试用更具体的条件重新提问。')
-    else if (status === 500 && detail.includes('SQL 执行')) addLog('warn', '💡 数据查询执行失败，可能是表结构变更或数据异常，请稍后重试。')
-    else if (status === 500) addLog('warn', '💡 分析引擎内部错误，请稍后重试或联系管理员。')
-    else addLog('warn', '💡 分析服务暂时不可用，请检查网络连接或稍后重试。')
+    const respData = e?.response?.data
+    const reportMd = respData?.report_markdown || ''
+    addLog('error', '分析失败')
+
+    if (reportMd && respData?.intent === 'error') {
+      addLog('warn', reportMd.replace(/[#*`[]]/g, '').replace(/\n{2,}/g, ' ').trim().slice(0, 300))
+      return
+    }
+
+    const errorTips = {
+      403: '💡 你没有该数据源的访问权限，请联系管理员分配。可以试试查询自己的数据。',
+      404: '💡 数据源不存在或已被删除，请检查数据源配置。',
+      422: '💡 请求参数有误，请换个说法重新提问。',
+    }
+    if (status in errorTips) {
+      addLog('warn', errorTips[status as keyof typeof errorTips])
+      return
+    }
+
+    const lowerDetail = detail.toLowerCase()
+    if (lowerDetail.includes('权限') || lowerDetail.includes('permission') || lowerDetail.includes('无权')) {
+      addLog('warn', '💡 权限不足，当前角色无法访问这些数据。试试查询个人数据或联系管理员。')
+    } else if (lowerDetail.includes('找不到') || lowerDetail.includes('404') || lowerDetail.includes('not found')) {
+      addLog('warn', '💡 请求的资源不存在，请检查名称是否正确。')
+    } else if (lowerDetail.includes('超时') || lowerDetail.includes('timeout')) {
+      addLog('warn', '💡 查询超时，数据量可能较大，试试缩小查询范围。')
+    } else if (lowerDetail.includes('sql') && (status === 400 || status === 500)) {
+      addLog('warn', '💡 查询生成失败，请尝试用更具体的条件重新提问。')
+    } else if (lowerDetail.includes('数据源') || lowerDetail.includes('datasource')) {
+      addLog('warn', '💡 数据源不可用，请联系管理员检查配置。')
+    } else if (status === 500) {
+      addLog('warn', '💡 服务内部错误，请稍后重试。如果持续出现，请联系管理员。')
+    } else {
+      addLog('warn', '💡 服务暂时不可用，请检查网络连接或稍后重试。')
+    }
   } finally {
     asking.value = false; currentStep.value = ''; abortController.value = null
   }
@@ -535,7 +628,7 @@ async function loadHistory() { try { history.value = (await queryApi.history()).
 .tag-finance { background: var(--dm-accent-soft); color: var(--dm-accent); }
 .tag-erp { background: rgba(139,92,246,0.1); color: #8B5CF6; }
 .primary-star { font-size: 11px; font-weight: 600; color: var(--dm-primary); margin-left: auto; }
-.main-panel-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
+.main-panel-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
 .main-panel-charts { margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 14px; min-width: 0; }
 .chart-card { background: var(--dm-surface); border-radius: var(--radius); padding: 12px 16px 4px; border: 1px solid var(--dm-border2); overflow: hidden; position: relative; }
 .chart-container { position: relative; width: 100%; }
@@ -546,12 +639,12 @@ async function loadHistory() { try { history.value = (await queryApi.history()).
 .detail-btn:hover { background: #4A4ED1; box-shadow: 0 4px 12px rgba(91,95,227,0.25); }
 
 /* Sub panels as cards */
-.sub-panel-card { background: var(--dm-card); border-radius: var(--radius-lg); border: 1px solid var(--dm-border); padding: 14px 16px; cursor: pointer; transition: all 0.2s; }
+.sub-panel-card { overflow: hidden;  background: var(--dm-card); border-radius: var(--radius-lg); border: 1px solid var(--dm-border); padding: 14px 16px; cursor: pointer; transition: all 0.2s; }
 .sub-panel-card:hover { box-shadow: var(--shadow-card-hover); border-color: var(--dm-primary); }
 .sub-panel-header { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
 .sub-panel-name { font-size: 14px; font-weight: 700; color: var(--dm-text); }
 .sub-panel-tag { font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 8px; background: var(--dm-surface); color: var(--dm-muted); letter-spacing: 0.03em; }
-.sub-panel-kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 6px; }
+.sub-panel-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 6px; }
 .sub-panel-mini-chart { margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--dm-border2); }
 
 /* ===== 右侧侧边栏 ===== */
@@ -580,6 +673,7 @@ async function loadHistory() { try { history.value = (await queryApi.history()).
 .term-warn { color: var(--dm-amber); } .term-warn .term-prompt { color: var(--dm-amber); }
 .term-code { display: block; margin-top: 4px; padding: 6px 10px; background: var(--dm-surface); border-left: 2px solid var(--dm-border); color: var(--dm-text2); font-size: 11px; border-radius: 0 4px 4px 0; word-break: break-all; white-space: pre-wrap; }
 .term-spinner { display: inline-block; width: 10px; height: 10px; border: 1.5px solid var(--dm-border); border-top-color: var(--dm-primary); border-radius: 50%; animation: spin 0.7s linear infinite; }
+.term-elapsed { color: var(--dm-muted); font-size: 10px; margin-left: 8px; font-variant-numeric: tabular-nums; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* 报告 + 历史面板 */
@@ -621,4 +715,5 @@ async function loadHistory() { try { history.value = (await queryApi.history()).
   .sub-grid { grid-template-columns: 1fr !important; }
   .ds-selector { flex-direction: column; align-items: flex-start; }
 }
+.side-report-deep-badge { display: inline-block; font-size: 10px; font-weight: 700; letter-spacing: 0.04em; padding: 2px 8px; border-radius: 12px; background: #EEF2FF; color: #6366F1; margin-left: 6px; }
 </style>

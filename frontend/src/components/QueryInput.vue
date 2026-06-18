@@ -14,9 +14,20 @@
         @keyup.enter="handleSend"
       />
       <div class="query-shortcut" v-if="!loading">
-        <kbd>↵</kbd>
+        <kbd>&#8629;</kbd>
       </div>
     </div>
+
+    <!-- 深度分析开关 -->
+    <label class="deep-analyze-toggle" :class="{ active: deepAnalyze }" title="启用深度分析将执行完整的数据分析与可视化">
+      <input type="checkbox" v-model="deepAnalyze" :disabled="loading" />
+      <svg class="da-icon" viewBox="0 0 16 16" fill="none">
+        <path d="M8 1v14M1 8h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <circle cx="8" cy="8" r="2.5" fill="currentColor"/>
+      </svg>
+      <span class="da-label">深度</span>
+    </label>
+
     <!-- P0#5: 取消按钮 -->
     <button v-if="loading" class="cancel-btn" @click="handleCancel">
       取消
@@ -31,13 +42,14 @@
 import { ref } from 'vue'
 
 const props = defineProps<{ loading?: boolean; placeholder?: string }>()
-const emit = defineEmits<{ send: [question: string]; cancel: [] }>()
+const emit = defineEmits<{ send: [payload: { question: string; deepAnalyze: boolean }]; cancel: [] }>()
 const question = ref('')
+const deepAnalyze = ref(false)
 
 function handleSend() {
   const q = question.value.trim()
   if (!q) return
-  emit('send', q)
+  emit('send', { question: q, deepAnalyze: deepAnalyze.value })
   question.value = ''
 }
 
@@ -101,6 +113,49 @@ function handleCancel() {
   border: 1px solid var(--dm-border);
   border-radius: 4px;
   padding: 1px 6px;
+}
+/* 深度分析开关 */
+.deep-analyze-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1.5px solid var(--dm-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.2s var(--ease-out);
+  user-select: none;
+  background: var(--dm-card);
+  flex-shrink: 0;
+}
+.deep-analyze-toggle:hover {
+  border-color: var(--dm-primary);
+}
+.deep-analyze-toggle.active {
+  border-color: var(--dm-primary);
+  background: var(--dm-primary-soft);
+}
+.deep-analyze-toggle input {
+  display: none;
+}
+.da-icon {
+  width: 16px;
+  height: 16px;
+  color: var(--dm-muted);
+  flex-shrink: 0;
+}
+.deep-analyze-toggle.active .da-icon {
+  color: var(--dm-primary);
+}
+.da-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dm-muted);
+  white-space: nowrap;
+}
+.deep-analyze-toggle.active .da-label {
+  color: var(--dm-primary);
 }
 .send-btn {
   height: 48px;

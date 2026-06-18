@@ -8,7 +8,7 @@ from sqlalchemy.sql import or_
 from app.models.user import User, UserRole
 from app.models.datasource import DataSource, DataSourcePermission
 from app.core.auth import get_current_user, get_role_str
-from app.agents.factory import agent_factory
+from app.core.agent_factory import agent_factory
 from app.core.row_level_security import RowLevelSecurityEngine
 
 

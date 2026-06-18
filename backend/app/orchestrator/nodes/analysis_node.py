@@ -1,130 +1,223 @@
-﻿"""Analysis Agent Node — 深度分析节点
-
-对 SQL 查询结果进行 Python 深度分析（趋势、对比、异常检测、预测），
-在 Docker 沙箱中安全执行 LLM 生成的代码。
-"""
-
-import json
-import logging
-
+"""Analysis Agent Node --- LLM-driven data analysis and visualization"""
+import json, logging
 import pandas as pd
 
-from app.agents.analysis_agent import analyze as analysis_agent_analyze
-from app.core.sandbox import execute_in_sandbox
+from app.core.llm_client import llm_client
 from app.orchestrator.state import (
-    AgentState, AnalysisResult, IntentType,
+    AgentState, AnalysisResult,
 )
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_SYSTEM_PROMPT_V2 = """你是一个数据科学专家。根据用户问题、意图类型和数据，生成 Python 分析代码。
+ANALYSIS_PROMPT = """You are a data analyst. Given SQL query results, generate analysis and ECharts-compatible charts.
 
-意图类型说明:
-- trend: 时间趋势分析 — 使用折线图展示变化，计算环比/同比
-- comparison: 对比分析 — 分组对比，使用柱状图
-- ranking: 排行分析 — Top N 排行
-- distribution: 分布分析 — 使用饼图/直方图
-- anomaly: 异常检测 — 统计方法识别异常值
-- root_cause: 根因分析 — 贡献度拆解，使用瀑布图/堆叠图
-- forecast: 预测 — 简单线性回归/移动平均预测
+Return ONLY a JSON object (no markdown, no explanation):
+{
+    "insight": "2-3 sentences of key findings in Chinese, with actual numbers",
+    "charts": [
+        {
+            "type": "bar|line|pie|scatter|horizontal_bar",
+            "title": "Chart title in Chinese",
+            "series_name": "Series name",
+            "x_data": ["cat1", "cat2", ...],
+            "series_data": [val1, val2, ...]
+        }
+    ]
+}
 
-要求:
-1. 代码使用 pandas/numpy 分析已加载的 df DataFrame (也可用 scipy.stats)
-2. 分析结果存放在以下变量:
-   - result_df: DataFrame (分析后的数据表格)
-   - insight: str (2-3 句核心洞察，含关键数字和业务结论)
-   - charts: list[dict] (每个图表: {"type":"line|bar|pie|scatter", "title":"...", "data":{...}, "options":{...}})
-3. 图表 data 格式与 ECharts 兼容:
-   - line/bar: {"type":"line", "title":"...", "xAxis":[...], "series":[{"name":"...","data":[...]}]}
-   - pie: {"type":"pie", "title":"...", "data":[{"name":"...","value":...}]}
-4. 不要 import pandas/numpy (已预导入)
-5. 只输出 Python 代码，不要解释。代码块以 ```python 开头。
-
-统计方法参考: describe(), groupby(), corr(), value_counts(), rolling(), pct_change(), diff(), cumsum()
+Rules:
+- insight must include actual numbers from the data
+- For category+value data use bar chart
+- For time series use line chart
+- For distribution/percentage use pie chart
+- For correlation between two numeric columns use scatter
+- For ranking with long labels use horizontal_bar
+- Max 3 charts, each chart must have meaningful data
+- x_data and series_data must be same length
 """
 
 
 async def analysis_node(state: AgentState) -> dict:
-    """分析节点 — LangGraph Node"""
+    """分析节点 — 根据 SQL 查询结果生成分析报告和 ECharts 可视化"""
+    mcp_result = state.get("mcp_result")
     question = state.get("question", "")
-    intent_result = state.get("intent_result")
-    sql_result = state.get("sql_result")
+    result = mcp_result or state.get("sql_result")
 
-    if sql_result is None or sql_result.df is None or sql_result.df.empty:
-        return {
-            "analysis_result": AnalysisResult(
-                status="success",
-                insight="数据为空，无需深度分析",
-            ),
-        }
+    if result is None or result.df is None or result.df.empty:
+        return {"analysis_result": AnalysisResult(status="success", insight="没有查询到数据，无法进行分析。")}
 
-    df = sql_result.df
-    intent_type = intent_result.intent_type if intent_result else IntentType.unknown
+    df = result.df
 
-    try:
-        # 尝试使用现有的 analyze 函数
-        analysis_result = await analysis_agent_analyze(question, df)
+    # 构建数据摘要
+    buf = []
+    buf.append("DataFrame: " + str(len(df)) + " rows x " + str(len(df.columns)) + " columns")
+    buf.append("Columns: " + str(list(df.columns)))
 
-        if analysis_result and analysis_result.get("status") == "success":
-            data = analysis_result.get("data", {})
-            return {
-                "analysis_result": AnalysisResult(
-                    status="success",
-                    insight=data.get("insight", ""),
-                    charts=data.get("charts", []),
-                    table=data.get("table", []),
-                ),
-            }
-
-        # 如果失败，回退到简单的统计分析
-        logger.warning(f"深度分析失败: {analysis_result.get('error', '')}")
-        return _fallback_analysis(df, intent_type)
-
-    except Exception as e:
-        logger.warning(f"分析节点异常: {e}")
-        return _fallback_analysis(df, intent_type)
-
-
-def _fallback_analysis(df: pd.DataFrame, intent_type: IntentType) -> dict:
-    """回退分析：当 LLM 分析失败时使用的基于规则的统计"""
     num_cols = list(df.select_dtypes(include=["number"]).columns)
     cat_cols = list(df.select_dtypes(include=["object", "category"]).columns)
 
-    insight_parts = []
-
-    # 基本统计
     if num_cols:
-        stats = df[num_cols].describe()
-        for col in num_cols[:3]:
-            insight_parts.append(
-                f"{col}: 均值={stats[col]['mean']:.1f}, "
-                f"最大={stats[col]['max']:.1f}, 最小={stats[col]['min']:.1f}"
-            )
+        buf.append("Numeric columns: " + str(num_cols))
+        desc = df[num_cols].describe().to_dict()
+        buf.append("Numeric stats: " + str(desc))
 
-    # 分类统计
     if cat_cols:
-        for col in cat_cols[:2]:
-            top_val = df[col].value_counts().head(1)
-            if not top_val.empty:
-                insight_parts.append(f"{col}中最多的是'{top_val.index[0]}'，共{top_val.values[0]}条")
+        for col in cat_cols[:5]:
+            vc = df[col].value_counts().head(8).to_dict()
+            buf.append(str(col) + " top values: " + str(vc))
 
+    # 添加前 10 行样例数据
+    buf.append("Sample data (first 10 rows):")
+    buf.append(str(df.head(10).to_dict(orient="records")))
+
+    prompt = ANALYSIS_PROMPT + "\n\nQuestion: " + question + "\n\nData:\n" + "\n".join(buf)
+
+    try:
+        msg = await llm_client.chat([{"role": "system", "content": prompt}])
+        content = msg.get("content", "").strip()
+
+        # 处理可能的 markdown 代码块包裹
+        if content.startswith("```"):
+            lines = content.split("\n", 1)
+            if len(lines) > 1:
+                content = lines[1]
+            if content.rstrip().endswith("```"):
+                content = content.rstrip()[:-3].strip()
+
+        parsed = json.loads(content)
+        insight_text = parsed.get("insight", "")
+        raw_charts = parsed.get("charts", [])
+
+        # 将 LLM 原始图表配置转换为 ECharts option
+        charts = _build_echarts_options(raw_charts)
+
+        logger.info("Analysis complete: %d chart(s) generated", len(charts))
+        return {"analysis_result": AnalysisResult(status="success", insight=insight_text, charts=charts)}
+
+    except Exception as e:
+        logger.warning("LLM analysis failed, using fallback: %s", e)
+        return _fallback_analysis(df, question)
+
+
+def _build_echarts_options(raw_charts: list[dict]) -> list[dict]:
+    """将 LLM 输出的原始图表定义转换为标准的 ECharts option 字典"""
     charts = []
-    # 如果有数值列和分类列，生成柱状图
-    if num_cols and cat_cols:
-        top_cats = df.groupby(cat_cols[0])[num_cols[0]].sum().sort_values(ascending=False).head(10)
-        charts.append({
-            "type": "bar",
-            "title": f"各{cat_cols[0]}{num_cols[0]}分布(Top 10)",
-            "data": {
-                "xAxis": [str(x) for x in top_cats.index],
-                "series": [{"name": num_cols[0], "data": [round(v, 2) for v in top_cats.values]}],
-            },
-        })
+    for ch in raw_charts:
+        try:
+            ctype = ch.get("type", "bar")
+            title = ch.get("title", "")
+            x_data = ch.get("x_data", [])
+            s_data = ch.get("series_data", [])
+            series_name = ch.get("series_name", title)
 
-    return {
-        "analysis_result": AnalysisResult(
-            status="success",
-            insight="；".join(insight_parts) if insight_parts else "已完成统计分析",
-            charts=charts,
-        ),
-    }
+            if not x_data or not s_data:
+                continue
+
+            # 确保 x_data 和 s_data 长度一致
+            min_len = min(len(x_data), len(s_data))
+            x_data = x_data[:min_len]
+            s_data = s_data[:min_len]
+
+            opt = {
+                "title": {"text": title, "left": "center", "textStyle": {"fontSize": 14}},
+                "tooltip": {"trigger": "axis"},
+                "grid": {"left": "3%", "right": "4%", "bottom": "15%", "containLabel": True},
+            }
+
+            if ctype == "pie":
+                opt["tooltip"] = {"trigger": "item", "formatter": "{b}: {c} ({d}%)"}
+                pie_data = [{"name": str(x_data[i]), "value": s_data[i]} for i in range(min_len)]
+                opt["series"] = [{
+                    "type": "pie",
+                    "radius": ["35%", "60%"],
+                    "data": pie_data,
+                    "label": {"show": True, "formatter": "{b}: {d}%"},
+                }]
+                opt.pop("grid", None)
+
+            elif ctype == "line":
+                opt["xAxis"] = {"type": "category", "data": x_data, "axisLabel": {"rotate": 30 if min_len > 8 else 0}}
+                opt["yAxis"] = {"type": "value"}
+                opt["series"] = [{"type": "line", "name": series_name, "data": s_data, "smooth": True, "symbol": "circle", "symbolSize": 6}]
+
+            elif ctype == "scatter":
+                opt["tooltip"] = {"trigger": "item", "formatter": "{a}: ({c})"}
+                opt["xAxis"] = {"type": "category", "data": x_data, "axisLabel": {"rotate": 30 if min_len > 8 else 0}}
+                opt["yAxis"] = {"type": "value"}
+                opt["series"] = [{"type": "scatter", "name": series_name, "data": s_data, "symbolSize": 10}]
+
+            elif ctype == "horizontal_bar":
+                opt["tooltip"] = {"trigger": "axis", "axisPointer": {"type": "shadow"}}
+                opt["xAxis"] = {"type": "value"}
+                opt["yAxis"] = {"type": "category", "data": x_data}
+                opt["series"] = [{"type": "bar", "name": series_name, "data": s_data}]
+
+            else:  # bar (default)
+                opt["xAxis"] = {"type": "category", "data": x_data, "axisLabel": {"rotate": 30 if min_len > 8 else 0}}
+                opt["yAxis"] = {"type": "value"}
+                opt["series"] = [{"type": "bar", "name": series_name, "data": s_data}]
+
+            charts.append(opt)
+
+        except Exception as e:
+            logger.warning("Skipping chart due to error: %s", e)
+            continue
+
+    return charts
+
+
+def _fallback_analysis(df: pd.DataFrame, question: str) -> dict:
+    """当 LLM 分析失败时的备用分析逻辑"""
+    num_cols = list(df.select_dtypes(include=["number"]).columns)
+    cat_cols = list(df.select_dtypes(include=["object", "category"]).columns)
+
+    parts = []
+    charts = []
+
+    # 数值列统计分析
+    if num_cols:
+        s = df[num_cols].describe()
+        for col in num_cols[:3]:
+            parts.append(str(col) + ": 均值=" + str(round(s[col]["mean"], 1)) + ", 最大值=" + str(round(s[col]["max"], 1)) + ", 最小值=" + str(round(s[col]["min"], 1)))
+
+    # 分类列频次统计
+    if cat_cols:
+        for col in cat_cols[:3]:
+            t = df[col].value_counts().head(1)
+            if not t.empty:
+                parts.append("Top " + str(col) + ": " + str(t.index[0]) + " (计数=" + str(t.values[0]) + ")")
+
+    # 生成柱状图（分类 + 数值组合最优时）
+    if num_cols and cat_cols:
+        group_col = cat_cols[0]
+        value_col = num_cols[0]
+        grouped = df.groupby(group_col)[value_col].sum().sort_values(ascending=False).head(10)
+        opt = {
+            "title": {"text": str(group_col) + " 按 " + str(value_col), "left": "center", "textStyle": {"fontSize": 14}},
+            "tooltip": {"trigger": "axis"},
+            "grid": {"left": "3%", "right": "4%", "bottom": "15%", "containLabel": True},
+            "xAxis": {"type": "category", "data": [str(x) for x in grouped.index], "axisLabel": {"rotate": 30}},
+            "yAxis": {"type": "value"},
+            "series": [{"type": "bar", "data": [round(float(v), 2) for v in grouped.values]}],
+        }
+        charts.append(opt)
+
+    # 如果有多个数值列，生成对比图
+    if len(num_cols) >= 2 and cat_cols:
+        group_col = cat_cols[0]
+        grouped = df.groupby(group_col)[num_cols[:2]].sum().head(10)
+        opt = {
+            "title": {"text": "多指标对比", "left": "center", "textStyle": {"fontSize": 14}},
+            "tooltip": {"trigger": "axis"},
+            "grid": {"left": "3%", "right": "4%", "bottom": "15%", "containLabel": True},
+            "xAxis": {"type": "category", "data": [str(x) for x in grouped.index], "axisLabel": {"rotate": 30}},
+            "yAxis": {"type": "value"},
+            "series": [
+                {"type": "bar", "name": str(num_cols[0]), "data": [round(float(v), 2) for v in grouped[num_cols[0]].values]},
+                {"type": "bar", "name": str(num_cols[1]), "data": [round(float(v), 2) for v in grouped[num_cols[1]].values]},
+            ],
+        }
+        charts.append(opt)
+
+    insight_text = "; ".join(parts) if parts else "完成数据分析。"
+    return {"analysis_result": AnalysisResult(status="success", insight=insight_text, charts=charts)}

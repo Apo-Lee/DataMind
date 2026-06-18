@@ -1,4 +1,4 @@
-﻿"""LangGraph StateGraph 编排 — DataMind AI Agent
+"""LangGraph StateGraph 编排 — DataMind AI Agent
 
 完整的工作流图：
 
@@ -44,9 +44,13 @@ import logging
 
 from langgraph.graph import END, StateGraph, START
 
-from app.orchestrator.state import AgentState, route_by_intent, route_after_sql, should_retry
+from app.orchestrator.state import AgentState, route_by_intent, route_after_sql, should_retry, route_by_quality, route_after_mcp
 from app.orchestrator.nodes.intent_node import intent_node
 from app.orchestrator.nodes.sql_node import sql_node
+from app.orchestrator.nodes.context_node import context_node
+from app.orchestrator.nodes.quality_node import quality_node
+from app.orchestrator.nodes.mcp_agent_node import mcp_agent_node
+
 from app.orchestrator.nodes.analysis_node import analysis_node
 from app.orchestrator.nodes.report_node import report_node
 
@@ -62,20 +66,45 @@ def build_agent_graph() -> StateGraph:
     graph = StateGraph(AgentState)
 
     # 注册节点
+    graph.add_node("context_node", context_node)
     graph.add_node("intent_node", intent_node)
+    graph.add_node("quality_node", quality_node)
+    graph.add_node("mcp_agent_node", mcp_agent_node)
     graph.add_node("sql_node", sql_node)
     graph.add_node("analysis_node", analysis_node)
     graph.add_node("report_node", report_node)
 
     # 从 START 到 Intent
-    graph.add_edge(START, "intent_node")
+    graph.add_edge(START, "context_node")
+    graph.add_edge("context_node", "intent_node")
 
     # Intent 路由
     graph.add_conditional_edges(
         "intent_node",
         route_by_intent,
         {
-            "sql_node": "sql_node",
+            "quality_node": "quality_node",
+            "analysis_node": "quality_node",
+            "report_node": "report_node",
+        },
+    )
+
+    # 质量检查 -> MCP Agent 或错误报告
+    graph.add_conditional_edges(
+        "quality_node",
+        route_by_quality,
+        {
+            "mcp_agent_node": "mcp_agent_node",
+            "report_node": "report_node",
+        },
+    )
+
+    # MCP Agent -> 分析或报告
+    graph.add_conditional_edges(
+        "mcp_agent_node",
+        route_after_mcp,
+        {
+            "analysis_node": "analysis_node",
             "report_node": "report_node",
         },
     )

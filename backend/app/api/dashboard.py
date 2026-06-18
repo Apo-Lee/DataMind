@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.factory import agent_factory
+from app.core.agent_factory import agent_factory
 from app.core.auth import get_current_user, get_role_str
 from app.core.permissions import get_accessible_datasources, get_agent_with_rls, check_datasource_access  # A1: 统一权限入口
 from app.database import get_db
